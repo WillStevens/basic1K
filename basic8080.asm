@@ -1,207 +1,393 @@
-;Basic interpreter
+; Will Stevens
+; 25th Feb 2022
+; 1K 8080 BASIC
+;
+; Memory map:
+; system vars
+; var space : 52 bytes
+; input buffer : 64 bytes
+; (also used as expression stack)
+; program area
+; stack area - top of RAM
 
-;Can a basic interpreter fit in 1K?
-;Program is stored as follows:
+; 0-25 are variables
+IntegerToken equ 26 ; followed by 16-bit integer
+LinenumToken equ 27 ; followed by 16-bit integer
+StringToken equ 28 ; followed by 1 byte length, followed by string characters
 
-;<type> [<value>]
+; Other tokens are the low byte of a pointer into TokenList which stores an address to call corresponding to the token
 
-B_End equ 0
-B_LineNo equ 1
-B_If equ 2
-B_Let equ 3
-B_Goto equ 4
-B_Print equ 5
-B_Input equ 6
-;Every token with bit 7 set can be part of an expression
-B_Integer equ 128
-B_Plus equ 129
-B_Minus equ 130
-B_Times equ 131
-B_Divide equ 132
-B_EQ equ 133
-B_NEQ equ 134
-B_LT equ 135
-B_GT equ 136
-B_LTE equ 137
-B_GTE equ 138
-B_VarA equ 139
-B_VarZ equ 164
+; Errors are display as Ex where x is a hex character
+; E0 - unrecognised token during parsing
+; EA - newline encountered in string
+; EF - input buffer overflow
 
-org 0000h
+ORG 0400h
 
-RunProgram:
-lxi h,ProgStart
+PROG_PTR:
+	DW PROG_BASE
+PROG_PARSE_PTR:
+	DW PROG_BASE
+	
+VAR_SPACE:
+	DW 0,0,0,0,0,0,0,0,0,0,0,0,0
+	DW 0,0,0,0,0,0,0,0,0,0,0,0,0
+	
+INPUT_BUFFER:
+;	DB "10 LET B=123",10
+	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+INPUT_BUFFER_END:
 
-RP1:
-mov a,m
-inx h
-cpi B_LineNo
-jnz RP2
-inx h
-inx h
-jmp RP1
+PROG_BASE:
 
-RP2:
-cpi B_Goto
-jnz RP3
-inx h ; No error checkthat this is integer
-mov c,m
-inx h
-mov b,m
-call FindLineNo
-jnc RPError
-jmp RP1
+ORG 10h
 
-RP3:
-cpi B_Print
-jnz RP4
+GetLine:
+	LXI H,INPUT_BUFFER-1
 
-call Evaluate
-call PrintHex4
-jmp RP1
+InputChar:
+	INX H
+	MOV A,L
+	CPI INPUT_BUFFER_END&0ffh
+	JZ InputBufferOverflow
+	MVI C,01
+	PUSH H
+	CALL 5
+	POP H
+	
+	MOV M,A
+	
+	CPI 10
+	JNZ InputChar
+	
+	; Now we have a line terminated by chr(10)
+	; Get location of input buffer into HL
+	LXI H,INPUT_BUFFER
 
-RP4:
-RPError:
-ret
+	CALL NextToken
+	
+	; If first token was an int, change it to a line no. marker and add the line to the program
+	
+	; Otherwise execute the statement
+	
+	JMP InputChar
+	
+NextToken:
+	; Get class of first char
+	MOV A,M
+	CPI 10
+	RZ
+	CALL CharClass
+	MOV B,A
+	
+	; Copy HL to DE so that DE points to start
+	PUSH H
+	POP D
+	
+NextChar:
+	; Are we in a string
+	MOV A,B
+	CPI '"'
+	JNZ NotInString
+	
+	; If yes then is M a chr(10) or quote
+	MOV A,M
+	INX H
+	CPI 10
+	JZ PopError
+	CPI '"'
+	JNZ NextChar
+	
+	
+	; Otherwise fall through and whole string will be handled
+	
+NotInString:
+	; Is M a different class from B
+	MOV A,M
+	CALL CharClass
+	
+	CMP B
+	JNZ DiffClass
+	
+	INX H
+	JMP NextChar
 
-;Evaluate an expression
-;Termination is indicated by a token that can’t be part of an expression (bit 6 not set)
+; If we reach this point then contents of buffer from DE to HL-1 are a token. C is the length
+; If it is an integer then calculate value
+; Otherwise lookup the token
+DiffClass:
+	; Set the hi bit of the last char in the token
+	DCX H
+	MOV A,M
+	ORI 128
+	MOV M,A
+	INX H
+	
+	MOV A,B
+	CPI ' '
+	JZ NextToken
+	CPI '0'
+	JZ Integer
+	CPI 'A'
+	JNZ NotVar
+	MOV A,L
+	DCR A
+	CMP E
+	JZ Var
+	
+NotVar:
+	
+	CALL LookupToken
+	CPI (NotFoundAddr+1)&0ffh
+	JZ TokenNotFound
 
-;HL points to the program 
-;Value returned in DE
+	PUSH H
+	
+; Store token in program
+	LHLD PROG_PARSE_PTR
+	MOV M,A
+	INX H
+	SHLD PROG_PARSE_PTR
+	
+	POP H
+	
+	JMP NextToken
 
-Evaluate:
-mov a,m
+TokenNotFound:
+	; Unrecognised token
+	MVI A,0
+	JMP PopError
 
-jmp EvaluateSkip
-EvaluateLoop:
-mov a,m
+Var:
+	LDAX D
+	ANI 128
+	SBI 'A'
+	
+	; Store var token in program
+	LHLD PROG_PARSE_PTR
+	MOV M,A
+	INX H
+	SHLD PROG_PARSE_PTR
+	
+	; DE points to the single-char varname, so swap it with HL and then inc to get a pointer to the next char to look at
+	XCHG
+	INX H
+	
+	JMP NextToken
+	
+Integer:
+	; The integer will be constructed in HL
+	LXI H,0
+	
+IntegerNext:
+	; Muliply by 10
+	PUSH H
+	POP B
+	
+	DAD H
+	DAD H
+	DAD B
+	DAD H
 
-ora a ; sign bit clear if we have moved past expression
+	LDAX D
+	ANI 07fh
+	SUI '0'
+	MOV C,A
+	MVI B,0
+	DAD B
+	
+	LDAX D
+	INX D
+	ANI 128
+	JZ IntegerNext
+	
+	; At this point HL contains the integer
+	; DE points to tbe char after end of token
+	
+	PUSH D
+	XCHG
+	
+	; Store integer in program
+	LHLD PROG_PARSE_PTR
+	MVI A,IntegerToken
+	MOV M,A
+	INX H
+	MOV M,E
+	INX H
+	MOV M,D
+	INX H
+	SHLD PROG_PARSE_PTR
+	
+	POP H
+	
+	JMP NextToken
 
-rp
-push d
+; DE points to start of token
+; HL points 1 char after
+LookupToken:
+	PUSH H
+	
+	LXI H,TokenList-2
+LookupTokenNext:
+	INR L
+	INR L
+	MOV A,L
+	CPI NotFoundAddr&0ffh
+	JZ NotFoundToken
+	PUSH D
+	CALL Strcmp
+	POP D
+	CPI 0
+	JZ FoundToken
+	
+LookupTokenFindNext:
+	MOV A,M
+	INR L
+	ANI 128
+	JNZ LookupTokenNext
+	JMP LookupTokenFindNext
 
-EvaluateSkip:
+NotFoundToken:
+FoundToken:
+; HL points to the last char of the token we've found
+; Advance past this so that it points to a subroutine address
+	MOV A,L
+	INR A
+	
+	POP H
+	RET
 
-inx h
+; DE points to hi-bit terminated string
+; HL points to hi-bit terminated string
+; Returns 0 in A on match
+Strcmp:
+	LDAX D
+	SUB M
+	RNZ
+	
+	MOV A,M
+	ANI 128
+	XRI 128
+	RZ
+	
+	INX D
+	INX H
+	JMP Strcmp
+	
+; Return the class of a character for tokenizing
+; Digit
+; Alphabetical
+; LT, GT or EQ
+; All others are distinct classes
 
-cpi B_Integer
-jnz EVAL1
+CharClass:
+	CPI '0'
+	JC NotDigit
+	CPI '9'+1
+	JC Digit
+NotDigit:
+	CPI 'A'
+	JC NotAlpha
+	CPI 'Z'+1
+	JC Alpha
+NotAlpha:
+	RET
 
-mov e,m
-inx h
-mov d,m
-inx h
+Digit:
+	MVI A,'0'
+	RET
+Alpha:
+	MVI A,'A'
+	RET
 
-jmp EvaluateLoop
+PrintSub:
+	RET
 
-EVAL1:
-cpi B_VarA
-jc EVAL2
+LetSub:
+	RET
 
-sbi B_VarA
-add a
-push h
-lxi h,VarSpace
-mov l,a
+InputBufferOverflow:
+	MVI A,0fh
+	JMP Error
+;Display error code in A and go back to line entry
+PopError:
+	POP H
+Error:
+	CPI 10
+	JNZ ErrorLt10
+	ADI 'A'-'0'-10
+ErrorLt10:
+	ADI '0'
+	PUSH PSW
+	MVI A,10
+	CALL PutChar
+	MVI A,69
+	CALL PutChar
+	POP PSW
+	CALL PutChar
+	MVI A,10
+	CALL PutChar
+	JMP Getline
 
-mov e,m
-inx h
-mov d,m
-pop h
+PutChar:
+	MOV E,A
+	MVI C,02
+	JMP 5
 
-jmp EvaluateLoop 
+; TokenList must be on same page and index to subroutine address must not overlap with other token values
+ORG 0380h
 
-
-EVAL2:
-cpi B_Plus
-jc EVAL3
-
-pop d
-xthl
-
-dad  d ; TODO need to check for overflow
-xchg
-pop h
-
-EVAL3:
-jmp EvaluateLoop
-
-
-;Find the line number in BC
-;Return in HL the address immediately following
-;carry flag is set if line number found, clear otherwise
-
-FindLineNo: 
-lxi h,ProgStart
-
-FLN1:
-mov a,m
-cpi B_End
-rz
-cpi B_LineNo
-jnz FLN2
-
-mov a,c
-inx h
-cmp m
-inx h
-inx h
-jnz FLN1
-dcx h
-mov a,b
-cmp m
-inx h
-stc
-rz
-jmp FLN1
-
-FLN2:
-cpi B_Integer
-inx h
-jnz FLN1
-inx h
-inx h
-jmp FLN1
-
-;Output the value in DE
-;Trashes A,D
-PrintHex4:
-call PrintHex2
-mov d,e
-
-;Output the value in D
-;Trashes A
-PrintHex2:
-mov a,d
-rrc a
-rrc a
-rrc a
-rrc a
-ani 0fh
-call PrintHex
-mov a,d
-ani 0fh
-
-;Output single hex value
-PrintHex:
-adi 48
-cpi 58
-jc PrintHexSkip
-adi 7
-PrintHexSkip:
-out 0
-ret
-
-;VarSpace must start at —00h
-org 0400h
-
-VarSpace:
-;initialise A and reserve space for B-Z
-db 18,52
-ds 50
-
-ProgStart: 
-db 1,10,0,5,139,128,1,0,129
-db 1,20,0,4,128,10,0,255
+TokenList:
+	DB "PRIN",'T'+128
+	DW PrintSub
+	DB "LE",'T'+128
+	DW LetSub
+	DB "GOT",'O'+128
+	DW 0
+	DB "GOSU",'B'+128
+	DW 0
+	DB "RETUR",'N'+128
+	DW 0
+	DB "I",'F'+128
+	DW 0
+	DB "EN",'D'+128
+	DW 0
+; Before this are keywords allowed at run-time
+	DB "THE",'N'+128
+	DW 0
+	DB "RU",'N'+128
+	DW 0
+	DB "LIS",'T'+128
+	DW 0
+	DB "CLEA",'R'+128
+	DW 0
+	DB ','+128
+	DW 0
+; After this are all things that can be found in expressions
+	DB '+'+128
+	DW 0
+	DB '-'+128
+	DW 0
+	DB '*'+128
+	DW 0
+	DB '/'+128
+	DW 0
+	DB '='+128
+	DW 0
+	DB "<>"+128
+	DW 0
+	DB '<'+128
+	DW 0
+	DB '>'+128
+	DW 0
+	DB "<",'='+128
+	DW 0
+	DB ">",'='+128
+	DW 0
+	DB '('+128
+	DW 0
+	DB ')'+128
+	DW 0
+NotFoundAddr:
+	DB 0
