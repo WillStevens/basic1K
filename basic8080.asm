@@ -1,6 +1,9 @@
 ; Will Stevens
-; 25th Feb 2022
+; 25th Feb 2023
 ; 1K 8080 BASIC
+;
+; 2023-03-03 About 450 bytes long
+; 2023-03-08 About 750 bytes long
 ;
 ; Memory map:
 ; system vars
@@ -10,6 +13,7 @@
 ; program area
 ; stack area - top of RAM
 
+; Token values
 ; 0-25 are variables
 IntegerToken equ 26 ; followed by 16-bit integer
 LinenumToken equ 27 ; followed by 16-bit integer
@@ -24,18 +28,24 @@ StringToken equ 28 ; followed by 1 byte length, followed by string characters
 
 ORG 0400h
 
-PROG_PTR:
-	DW PROG_BASE
-PROG_PARSE_PTR:
-	DW PROG_BASE
-	
+; For efficient access, this must be on a 256 byte boundary
 VAR_SPACE:
 	DW 0,0,0,0,0,0,0,0,0,0,0,0,0
 	DW 0,0,0,0,0,0,0,0,0,0,0,0,0
 	
+PROG_PTR:
+	DW PROG_BASE
+PROG_PARSE_PTR:
+	DW PROG_BASE
+
+; Input buffer and operator stack can share the
+; same memory - not used at same time
 INPUT_BUFFER:
 ;	DB "10 LET B=123",10
-	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+OPERATOR_STACK_PTR:
+	DW 0
+OPERATOR_STACK_BASE:
+	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 INPUT_BUFFER_END:
 
@@ -69,9 +79,27 @@ InputChar:
 	
 	; If first token was an int, change it to a line no. marker and add the line to the program
 	
-	; Otherwise execute the statement
+	LHLD PROG_PTR
+	MOV A,M
+	CPI 26
+	JNZ ExecuteDirect
+	INR A
+	MOV M,A
+	LHLD PROG_PARSE_PTR
+	SHLD PROG_PTR
 	
-	JMP InputChar
+	JMP GetLine
+	
+ExecuteDirect:
+	
+	LHLD PROG_PTR
+	SHLD PROG_PARSE_PTR
+	
+	; Otherwise execute the statement
+	; Assume its RUN
+	JMP ExecuteProgram
+	
+	JMP GetLine
 	
 NextToken:
 	; Get class of first char
@@ -302,10 +330,56 @@ Alpha:
 	RET
 
 PrintSub:
+	; assume its an int
+	CALL ExpEvaluate
+	PUSH B
+	CALL PrintHex4
+	POP B
 	RET
 
 LetSub:
 	RET
+	
+GotoSub:
+	RET
+
+ExecuteProgram:
+	; Point BC to first line
+	; Skip over the line number
+	LXI B,PROG_BASE+3
+
+ExecuteProgramLoop:
+	; Check that we haven't reached end of program
+	LHLD PROG_PTR
+	MOV A,L
+	CMP C
+	JNZ ExecuteProgramNotEnd
+	MOV A,H
+	CMP B
+	JZ GetLine
+	
+ExecuteProgramNotEnd:
+	LDAX B
+	INX B
+	
+	; TODO Check that it is a keyword allowed in a program
+	
+	; Put return address onto stack
+	LXI H,ExecuteProgramLoop
+	PUSH H
+	
+	; Put pointer to call address into HL
+	MOV L,A
+	MVI H,(TokenList&0ff00h)/256
+	; Get call address into DE
+	MOV E,M
+	INX H
+	MOV D,M
+	; Move it to HL
+	XCHG
+	
+	; Jump to it
+	PCHL
 
 InputBufferOverflow:
 	MVI A,0fh
@@ -335,6 +409,253 @@ PutChar:
 	MVI C,02
 	JMP 5
 
+;Output the value in DE
+PrintHex4:
+	call PrintHex2
+	mov d,e
+
+;Output the value in D
+PrintHex2:
+	mov a,d
+	rrc a
+	rrc a
+	rrc a
+	rrc a
+	ani 0fh
+	call PrintHex
+	mov a,d
+	ani 0fh
+
+;Output single hex value
+PrintHex:
+	adi 48
+	cpi 58
+	jc PrintHexSkip
+	adi 7
+	PrintHexSkip:
+	PUSH PSW
+	PUSH D
+	CALL PutChar
+	POP D
+	POP PSW
+	RET
+
+; BC points to program
+; DE contains value
+; operator stack pointer stored in mem
+; in OPERATOR_STACK_PTR
+; Operand stack - SP
+
+ExpError:
+	; TODO implement this
+
+ExpEvaluate:
+	LXI H,OPERATOR_STACK_BASE
+	SHLD OPERATOR_STACK_PTR
+
+ExpEvaluateNum:
+	; Expecting ( var integer
+	LDAX B
+	CPI LeftBraceToken&0ffh
+	JZ ExpLeftBrace
+	CPI IntegerToken&0ffh
+	JZ ExpInteger
+	CPI 27
+	JC ExpVar
+	
+	; TODO Error - expecting ( var integer
+	JMP ExpError
+	
+ExpLeftBrace:
+	; push it onto operator stack
+	LHLD OPERATOR_STACK_PTR
+	MOV M,A
+	INX H
+	SHLD OPERATOR_STACK_PTR
+	
+	INX B
+	JMP ExpEvaluateNum
+
+ExpInteger:
+	INX B
+	LDAX B
+	MOV E,A
+	INX B
+	LDAX B
+	MOV D,A
+	INX B
+	JMP ExpEvaluateOp
+	
+ExpVar:
+	; Get var value into DE
+	
+	MVI H,VAR_SPACE/256
+	ADD A
+	MOV L,A
+	
+	MOV E,M
+	INX H
+	MOV D,M
+	
+	INX B
+	JMP ExpEvaluateOp
+	
+ExpEvaluateOp:
+	;Expecting operator or right bracket or
+	;end of expression
+	
+	;Are there operators on the stack?
+	LDA OPERATOR_STACK_PTR
+	CPI OPERATOR_STACK_BASE&0ffh
+	JZ SkipExpApplyOp
+	
+	LDAX B
+	
+	CPI TokenListExpr&0ffh ; operators or right bracket
+	; Is it the end of the expression?
+	JC ExpApplyOp
+	
+	; or does operator on stack have GTE precedence?
+	DCR A
+	CMP M
+	
+	JNC SkipExpApplyOp ; no, dont apply op
+
+ExpApplyOp:
+	; POP operator from stack
+	; this also handles the case when a
+	; left brace is encountered
+	
+	LHLD OPERATOR_STACK_PTR
+	DCX
+	MOV A,M
+	SHLD OPERATOR_STACK_PTR
+	
+	MVI H,TokenList/256
+	MOV L,A
+	
+	MOV A,M
+	INX H
+	MOV H,M
+	MOV L,A
+	; Push the operator function address
+	; onto the stack, and use RET to branch to
+	; it in a moment
+	PUSH H
+	; Put the address that we want to return to
+	; into HL. 
+	LXI H,ExpEvaluateOp
+	
+	RET	; Jump to operator function
+	
+SkipExpApplyOp:
+	LDAX B
+	
+	CPI TokenListExpr&0ffh ; operators or right bracket
+	; Is it the end of the expression?
+	RC
+	
+	; Push onto the operator stack
+	LHLD OPERATOR_STACK_PTR
+	MOV M,A
+	INX H
+	SHLD OPERATOR_STACK_PTR
+
+	; move onto next token
+	INX B
+	
+	;because we are
+	;expecting another value, push DE onto stack
+	PUSH D
+	
+	JMP ExpEvaluateNum
+	
+; If start address of all of the operator subroutines fit in 256 bytes then there is a potential saving by using only single byte in lookup table, and maybe also using this byte as the token 
+
+NotEqualSub_1:
+	; SubSub will have been executed prior to this
+	; so test for zero
+	LXI H,0ffffh
+	DAD D
+	JC NotEqualSub_2
+	JMP ExpEvaluateOp
+
+LTESub_1:
+	; SubSub will have been executed prior to this
+	JC EqualSub_2
+	
+NotEqualSub_2:
+	LXI D,1
+	JMP ExpEvaluateOp
+	
+EqualSub_1:
+	; SubSub will have been executed prior to this
+	; so test for zero
+	LXI H,0ffffh
+	DAD D
+	JC EqualSub_2
+	INX D
+	JMP ExpEvaluateOp
+
+GTSub_1:
+	; SubSub will have been executed prior to this
+	JC NotEqualSub_2
+	
+EqualSub_2:
+	LXI D,0
+	JMP ExpEvaluateOp
+
+LeftBraceSub:
+	LDAX B
+	; Is current operator a right brace?
+	CPI RightBraceToken&0ffh
+	JNZ ExpError ; expecting right brace
+	
+	INX B
+	JMP ExpEvaluateOp
+
+NotEqualSub:
+	LXI H,NotEqualSub_1
+EqualSub:
+	LXI H,EqualSub_1
+	
+SubSub:
+	MOV A,E
+	CMA
+	MOV E,A
+	MOV A,D
+	CMA
+	MOV D,E
+	INX D
+	
+AddSub:
+	; exchange H with stack top to get operand into H and return address on stack
+	XTHL
+
+	;Add DE to top of stack and keep in DE
+	DAD D
+	XCHG
+	
+	RET
+
+LTSub:
+	; Swap operands and fall through
+	XCHG
+	XTHL
+	XCHG
+GTSub:
+	LXI H,GTSub_1
+	JMP SubSub
+
+GTESub:
+	; Swap operands and fall through
+	XCHG
+	XTHL
+	XCHG
+LTESub:
+	LXI H,LTESub_1
+	JMP SubSub
+
 ; TokenList must be on same page and index to subroutine address must not overlap with other token values
 ORG 0380h
 
@@ -344,7 +665,7 @@ TokenList:
 	DB "LE",'T'+128
 	DW LetSub
 	DB "GOT",'O'+128
-	DW 0
+	DW GotoSub
 	DB "GOSU",'B'+128
 	DW 0
 	DB "RETUR",'N'+128
@@ -364,30 +685,33 @@ TokenList:
 	DW 0
 	DB ','+128
 	DW 0
-; After this are all things that can be found in expressions
+	DB '('+128
+LeftBraceToken:
+	DW LeftBraceSub
+;After this label, only expect things which count as operators
+TokenListExpr:
+	DB ')'+128
+RightBraceToken:
+	DW 0
+	DB '='+128
+	DW EqualSub
+	DB "<>"+128
+	DW NotEqualSub
+	DB '<'+128
+	DW LTSub
+	DB '>'+128
+	DW GTSub
+	DB "<",'='+128
+	DW LTESub
+	DB ">",'='+128
+	DW GTESub
 	DB '+'+128
-	DW 0
+	DW AddSub
 	DB '-'+128
-	DW 0
+	DW SubSub
 	DB '*'+128
 	DW 0
 	DB '/'+128
-	DW 0
-	DB '='+128
-	DW 0
-	DB "<>"+128
-	DW 0
-	DB '<'+128
-	DW 0
-	DB '>'+128
-	DW 0
-	DB "<",'='+128
-	DW 0
-	DB ">",'='+128
-	DW 0
-	DB '('+128
-	DW 0
-	DB ')'+128
 	DW 0
 NotFoundAddr:
 	DB 0
