@@ -4,6 +4,7 @@
 ;
 ; 2023-03-03 About 450 bytes long
 ; 2023-03-08 About 750 bytes long
+; 2023-03-11 About 840 bytes long
 ;
 ; Memory map:
 ; system vars
@@ -12,6 +13,12 @@
 ; (also used as expression stack)
 ; program area
 ; stack area - top of RAM
+
+; For development purposes assume we have
+; 1K ROM from 0000h-03FFh containing BASIC
+; 1K RAM from 0400h-07FFh
+
+RAM_TOP equ 07ffh ; highest byte of RAM
 
 ; Token values
 ; 0-25 are variables
@@ -23,6 +30,7 @@ StringToken equ 28 ; followed by 1 byte length, followed by string characters
 
 ; Errors are display as Ex where x is a hex character
 ; E0 - unrecognised token during parsing
+; E1 - end of program when looking for line
 ; EA - newline encountered in string
 ; EF - input buffer overflow
 
@@ -54,6 +62,13 @@ PROG_BASE:
 ORG 10h
 
 GetLine:
+
+	; Set stack pointer to top of RAM
+	; Do this every time to guard against
+	; GOSUB with no RETURN errors
+	
+	LXI H,RAM_TOP+1
+	SPHL
 	LXI H,INPUT_BUFFER-1
 
 InputChar:
@@ -90,7 +105,7 @@ InputChar:
 	
 	JMP GetLine
 	
-ExecuteDirect:
+ExecuteDirect: ; Depth = 0
 	
 	LHLD PROG_PTR
 	SHLD PROG_PARSE_PTR
@@ -101,7 +116,7 @@ ExecuteDirect:
 	
 	JMP GetLine
 	
-NextToken:
+NextToken: ; Depth = 1
 	; Get class of first char
 	MOV A,M
 	CPI 10
@@ -189,7 +204,7 @@ TokenNotFound:
 
 Var:
 	LDAX D
-	ANI 128
+	ANI 07fh
 	SBI 'A'
 	
 	; Store var token in program
@@ -253,7 +268,7 @@ IntegerNext:
 
 ; DE points to start of token
 ; HL points 1 char after
-LookupToken:
+LookupToken: ; Depth = 2
 	PUSH H
 	
 	LXI H,TokenList-2
@@ -289,7 +304,7 @@ FoundToken:
 ; DE points to hi-bit terminated string
 ; HL points to hi-bit terminated string
 ; Returns 0 in A on match
-Strcmp:
+Strcmp: ; Depth = 3
 	LDAX D
 	SUB M
 	RNZ
@@ -330,7 +345,6 @@ Alpha:
 	RET
 
 PrintSub:
-	; assume its an int
 	CALL ExpEvaluate
 	PUSH B
 	CALL PrintHex4
@@ -338,12 +352,106 @@ PrintSub:
 	RET
 
 LetSub:
+	; TODO test that we have var and equal sign
+	LDAX B
+	PUSH PSW
+	INX B
+	INX B
+	
+	CALL ExpEvaluate
+	
+	POP PSW
+	
+	; Put DE into var
+	
+	MVI H,VAR_SPACE/256
+	ADD A
+	MOV L,A
+	
+	MOV M,E
+	INX H
+	MOV M,D
+	
 	RET
 	
+GosubSub: ; Depth = 1
+	CALL ExpEvaluate
+	POP H	; Preserve return address
+	PUSH B
+	PUSH H
+	JMP GetLineNum
+	
 GotoSub:
-	RET
+	CALL ExpEvaluate
 
-ExecuteProgram:
+GetLineNum:
+	; Line number is in DE, look it up in the program and set BC to the position after it
+	LXI B,PROG_BASE
+
+GetLineNumLoop:
+	INX B
+	LDAX B
+	INX B
+	CMP E
+	JNZ GetLineNumNext
+	LDAX B
+	CMP D
+	JNZ GetLineNumNext
+	
+	INX B
+	RET
+	
+GetLineNumNext:
+	INX B
+	CALL AdvanceToNextLineNum
+	JMP GetLineNumLoop
+
+IfSub:
+	CALL ExpEvaluate
+	MOV A,E
+	ORA D
+	RNZ
+	
+	; If DE zero then fall through to next line
+	
+AdvanceToNextLineNum:
+; BC is a pointer to somewhere in the program
+; move onto the next line number
+; or error if we fall out of program
+	LDAX B
+	CPI LinenumToken
+	RZ
+	CPI IntegerToken
+	JNZ ATNLN_NotInt
+	INX B
+	INX B
+ATNLN_NotInt:
+	INX B
+	
+	LDA PROG_PTR
+	CMP C
+	JNZ AdvanceToNextLineNum
+	LDA PROG_PTR+1
+	CMP B
+	JNZ AdvanceToNextLineNum
+	
+	; Error, fell off end of program
+	MVI A,1
+	
+	JMP PopError
+
+ReturnSub:
+	;TODO - how to always detect
+	; return without GOSUB
+	; could put marker word onto stack?
+	; and inc/dec every call/return
+	; and check for marker march
+	
+	POP H	; Get return address first
+	POP B ; Get pointer to program loc to return to
+	PCHL
+
+ExecuteProgram: ; Depth = 0
 	; Point BC to first line
 	; Skip over the line number
 	LXI B,PROG_BASE+3
@@ -358,10 +466,25 @@ ExecuteProgramLoop:
 	CMP B
 	JZ GetLine
 	
+	; TODO need to check that we haven't ended with a GOSUB without return condition
+	; stack should be empty
+	; if not then correct it
+	
 ExecuteProgramNotEnd:
 	LDAX B
-	INX B
 	
+	; Is it a line number?
+	CPI LinenumToken
+	JNZ ExecuteProgramNotLineNum
+	
+	INX B
+	INX B
+	INX B
+	LDAX B
+	
+ExecuteProgramNotLineNum:
+	INX B
+
 	; TODO Check that it is a keyword allowed in a program
 	
 	; Put return address onto stack
@@ -527,7 +650,7 @@ ExpApplyOp:
 	; left brace is encountered
 	
 	LHLD OPERATOR_STACK_PTR
-	DCX
+	DCX H
 	MOV A,M
 	SHLD OPERATOR_STACK_PTR
 	
@@ -625,7 +748,7 @@ SubSub:
 	MOV E,A
 	MOV A,D
 	CMA
-	MOV D,E
+	MOV D,A
 	INX D
 	
 AddSub:
@@ -667,11 +790,11 @@ TokenList:
 	DB "GOT",'O'+128
 	DW GotoSub
 	DB "GOSU",'B'+128
-	DW 0
+	DW GosubSub
 	DB "RETUR",'N'+128
-	DW 0
+	DW ReturnSub
 	DB "I",'F'+128
-	DW 0
+	DW IfSub
 	DB "EN",'D'+128
 	DW 0
 ; Before this are keywords allowed at run-time
