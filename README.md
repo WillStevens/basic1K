@@ -14,3 +14,10 @@ expensive (in 1975 1Kb of RAM cost nearly
 often only afford a few KB. I want to
 understand how small a BASIC interpreter
 can be.
+
+This implementation is loosely based on
+Tiny BASIC, but a key difference is that
+basic8080 is tokenised rather than being
+parsed at run-time. Whether or not this
+is a net benefit for code size remains to
+be seen.
