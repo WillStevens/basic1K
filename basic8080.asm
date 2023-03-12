@@ -5,6 +5,10 @@
 ; 2023-03-03 About 450 bytes long
 ; 2023-03-08 About 750 bytes long
 ; 2023-03-11 About 840 bytes long
+; 2023-03-12 About 930 bytes long.
+;   String tokens added.
+;   * and / yet to be added.
+;   Some scope for size optimization.
 ;
 ; Memory map:
 ; system vars
@@ -48,6 +52,7 @@ PROG_PARSE_PTR:
 
 ; Input buffer and operator stack can share the
 ; same memory - not used at same time
+; Input buffer must not be over a 256 byte boundary
 INPUT_BUFFER:
 ;	DB "10 LET B=123",10
 OPERATOR_STACK_PTR:
@@ -128,6 +133,10 @@ NextToken: ; Depth = 1
 	PUSH H
 	POP D
 	
+	; If first char is double quote, then we're not yet inside the string
+	CPI '"'
+	JZ NotInString
+	
 NextChar:
 	; Are we in a string
 	MOV A,B
@@ -141,7 +150,6 @@ NextChar:
 	JZ PopError
 	CPI '"'
 	JNZ NextChar
-	
 	
 	; Otherwise fall through and whole string will be handled
 	
@@ -172,6 +180,8 @@ DiffClass:
 	JZ NextToken
 	CPI '0'
 	JZ Integer
+	CPI '"'
+	JZ String
 	CPI 'A'
 	JNZ NotVar
 	MOV A,L
@@ -253,8 +263,7 @@ IntegerNext:
 	
 	; Store integer in program
 	LHLD PROG_PARSE_PTR
-	MVI A,IntegerToken
-	MOV M,A
+	MVI M,IntegerToken
 	INX H
 	MOV M,E
 	INX H
@@ -265,6 +274,31 @@ IntegerNext:
 	POP H
 	
 	JMP NextToken
+
+; DE points to first double quote
+; HL-1 is last double quote
+String:
+	INR E
+	MOV A,L
+	SUB E
+	DCR A
+	;A contains the length
+	
+	PUSH H
+	
+	;Store token ID, length and string
+	LHLD PROG_PARSE_PTR
+	MVI M,StringToken
+	INX H
+	MOV M,A
+	INX H
+	CALL StrCpy
+	SHLD PROG_PARSE_PTR
+	
+	POP H
+	
+	JMP NextToken
+	
 
 ; DE points to start of token
 ; HL points 1 char after
@@ -317,7 +351,29 @@ Strcmp: ; Depth = 3
 	INX D
 	INX H
 	JMP Strcmp
+
+; DE points to start
+; HL points to dest
+; A is length
+
+; Leaves HL pointing to char after string
+StrCpy:
+	ORA A
+	RZ
 	
+	PUSH PSW
+	LDAX D
+	MOV M,A
+	POP PSW
+
+	INX D
+	INX H
+	
+	DCR A
+	JMP Strcpy
+	
+
+
 ; Return the class of a character for tokenizing
 ; Digit
 ; Alphabetical
@@ -345,12 +401,34 @@ Alpha:
 	RET
 
 PrintSub:
+	LDAX B
+	CPI StringToken
+	JZ PrintStringToken
 	CALL ExpEvaluate
 	PUSH B
 	CALL PrintHex4
 	POP B
-	RET
 
+PrintSubEndTest:
+	LDAX B
+	INX B
+	CPI ','
+	JZ PrintSub
+	DCX B
+	; TODO print new line
+	RET
+	
+PrintStringToken:
+	INX B
+	LDAX B
+	INX B
+	PUSH B
+	POP H
+	CALL OutputString
+	MOV B,H
+	MOV C,L
+	RET
+	
 LetSub:
 	; TODO test that we have var and equal sign
 	LDAX B
@@ -421,6 +499,8 @@ AdvanceToNextLineNum:
 	LDAX B
 	CPI LinenumToken
 	RZ
+	CPI StringToken
+	JZ ATNLN_String
 	CPI IntegerToken
 	JNZ ATNLN_NotInt
 	INX B
@@ -440,6 +520,21 @@ ATNLN_NotInt:
 	
 	JMP PopError
 
+ATNLN_String:
+	INX B
+	LDAX B
+	INX B
+	; Add A onto BC
+	ADD C
+	MOV C,A
+	; TODO think this can be
+	; ADC B, SBB C, MOV B,A
+	MVI A,0
+	ADC B
+	MOV B,A
+	
+	JMP ATNLN_NotInt
+	
 ReturnSub:
 	;TODO - how to always detect
 	; return without GOSUB
@@ -531,6 +626,29 @@ PutChar:
 	MOV E,A
 	MVI C,02
 	JMP 5
+
+OutputString:
+;Pointer in H
+;Length in A
+
+	PUSH B
+	
+OutputStringLoop:
+	ORA A
+	JNZ OutputStringContinue
+	POP B
+	RET
+	
+OutputStringContinue:
+	
+	MOV E,M
+	MVI C,02
+	CALL 5
+	
+	INX H
+	
+	DCR A
+	JMP OutputStringLoop
 
 ;Output the value in DE
 PrintHex4:
