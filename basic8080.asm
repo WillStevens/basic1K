@@ -9,7 +9,10 @@
 ;   String tokens added.
 ;   * and / yet to be added.
 ;   Some scope for size optimization.
-;
+; 2023-03-12 About 940 bytes long
+		* added
+		some reduction in code size done
+		
 ; Memory map:
 ; system vars
 ; var space : 52 bytes
@@ -22,15 +25,17 @@
 ; 1K ROM from 0000h-03FFh containing BASIC
 ; 1K RAM from 0400h-07FFh
 
-RAM_TOP equ 07ffh ; highest byte of RAM
+RAM_TOP equ 0800h ; 1 more than top byte of RAM
 
 ; Token values
-; 0-25 are variables
-IntegerToken equ 26 ; followed by 16-bit integer
-LinenumToken equ 27 ; followed by 16-bit integer
-StringToken equ 28 ; followed by 1 byte length, followed by string characters
+; 193-218 are variables
+IntegerToken equ 254 ; followed by 16-bit integer
+LinenumToken equ 255 ; followed by 16-bit integer
+StringToken equ 253; followed by 1 byte length, followed by string characters
+CommaToken equ 252
+NotFoundToken equ 251
 
-; Other tokens are the low byte of a pointer into TokenList which stores an address to call corresponding to the token
+; Callable tokens are low byte of subroutine to call
 
 ; Errors are display as Ex where x is a hex character
 ; E0 - unrecognised token during parsing
@@ -52,9 +57,14 @@ PROG_PARSE_PTR:
 
 ; Input buffer and operator stack can share the
 ; same memory - not used at same time
-; Input buffer must not be over a 256 byte boundary
+; Input buffer must not be over a 256 byte 
+; boundary
+; Stack is just below input buffer to save code
+; when initialising
+
+org RAM_TOP-64
+STACK_INIT:
 INPUT_BUFFER:
-;	DB "10 LET B=123",10
 OPERATOR_STACK_PTR:
 	DW 0
 OPERATOR_STACK_BASE:
@@ -68,13 +78,14 @@ ORG 10h
 
 GetLine:
 
-	; Set stack pointer to top of RAM
+	; Set stack pointer to just below input buffer
 	; Do this every time to guard against
 	; GOSUB with no RETURN errors
 	
-	LXI H,RAM_TOP+1
-	SPHL
 	LXI H,INPUT_BUFFER-1
+	SPHL
+	
+	; H is also the initial pointer to input buffer
 
 InputChar:
 	INX H
@@ -101,7 +112,7 @@ InputChar:
 	
 	LHLD PROG_PTR
 	MOV A,M
-	CPI 26
+	CPI IntegerToken
 	JNZ ExecuteDirect
 	INR A
 	MOV M,A
@@ -192,7 +203,7 @@ DiffClass:
 NotVar:
 	
 	CALL LookupToken
-	CPI (NotFoundAddr+1)&0ffh
+	CPI NotFoundToken
 	JZ TokenNotFound
 
 	PUSH H
@@ -209,13 +220,12 @@ NotVar:
 
 TokenNotFound:
 	; Unrecognised token
-	MVI A,0
+	XRA A
 	JMP PopError
 
 Var:
 	LDAX D
-	ANI 07fh
-	SBI 'A'
+	; Token value is var letter+128
 	
 	; Store var token in program
 	LHLD PROG_PARSE_PTR
@@ -244,7 +254,7 @@ IntegerNext:
 	DAD H
 
 	LDAX D
-	ANI 07fh
+	ANI 07f
 	SUI '0'
 	MOV C,A
 	MVI B,0
@@ -305,9 +315,8 @@ String:
 LookupToken: ; Depth = 2
 	PUSH H
 	
-	LXI H,TokenList-2
+	LXI H,TokenList-1
 LookupTokenNext:
-	INR L
 	INR L
 	MOV A,L
 	CPI NotFoundAddr&0ffh
@@ -328,9 +337,9 @@ LookupTokenFindNext:
 NotFoundToken:
 FoundToken:
 ; HL points to the last char of the token we've found
-; Advance past this so that it points to a subroutine address
-	MOV A,L
-	INR A
+; Advance past this then get the token value
+	INX H
+	MOV A,M
 	
 	POP H
 	RET
@@ -400,24 +409,6 @@ Alpha:
 	MVI A,'A'
 	RET
 
-PrintSub:
-	LDAX B
-	CPI StringToken
-	JZ PrintStringToken
-	CALL ExpEvaluate
-	PUSH B
-	CALL PrintHex4
-	POP B
-
-PrintSubEndTest:
-	LDAX B
-	INX B
-	CPI ','
-	JZ PrintSub
-	DCX B
-	; TODO print new line
-	RET
-	
 PrintStringToken:
 	INX B
 	LDAX B
@@ -429,39 +420,6 @@ PrintStringToken:
 	MOV C,L
 	RET
 	
-LetSub:
-	; TODO test that we have var and equal sign
-	LDAX B
-	PUSH PSW
-	INX B
-	INX B
-	
-	CALL ExpEvaluate
-	
-	POP PSW
-	
-	; Put DE into var
-	
-	MVI H,VAR_SPACE/256
-	ADD A
-	MOV L,A
-	
-	MOV M,E
-	INX H
-	MOV M,D
-	
-	RET
-	
-GosubSub: ; Depth = 1
-	CALL ExpEvaluate
-	POP H	; Preserve return address
-	PUSH B
-	PUSH H
-	JMP GetLineNum
-	
-GotoSub:
-	CALL ExpEvaluate
-
 GetLineNum:
 	; Line number is in DE, look it up in the program and set BC to the position after it
 	LXI B,PROG_BASE
@@ -483,14 +441,6 @@ GetLineNumNext:
 	INX B
 	CALL AdvanceToNextLineNum
 	JMP GetLineNumLoop
-
-IfSub:
-	CALL ExpEvaluate
-	MOV A,E
-	ORA D
-	RNZ
-	
-	; If DE zero then fall through to next line
 	
 AdvanceToNextLineNum:
 ; BC is a pointer to somewhere in the program
@@ -535,16 +485,7 @@ ATNLN_String:
 	
 	JMP ATNLN_NotInt
 	
-ReturnSub:
-	;TODO - how to always detect
-	; return without GOSUB
-	; could put marker word onto stack?
-	; and inc/dec every call/return
-	; and check for marker march
-	
-	POP H	; Get return address first
-	POP B ; Get pointer to program loc to return to
-	PCHL
+
 
 ExecuteProgram: ; Depth = 0
 	; Point BC to first line
@@ -589,12 +530,6 @@ ExecuteProgramNotLineNum:
 	; Put pointer to call address into HL
 	MOV L,A
 	MVI H,(TokenList&0ff00h)/256
-	; Get call address into DE
-	MOV E,M
-	INX H
-	MOV D,M
-	; Move it to HL
-	XCHG
 	
 	; Jump to it
 	PCHL
@@ -697,15 +632,30 @@ ExpEvaluate:
 ExpEvaluateNum:
 	; Expecting ( var integer
 	LDAX B
-	CPI LeftBraceToken&0ffh
+	CPI LeftBraceSub&0ffh
 	JZ ExpLeftBrace
-	CPI IntegerToken&0ffh
+	CPI IntegerToken
 	JZ ExpInteger
-	CPI 27
-	JC ExpVar
+	CPI 128+'Z'+1
+	JNC ExpError
+	CPI 128+'A'
+	JC ExpError
 	
-	; TODO Error - expecting ( var integer
-	JMP ExpError
+	; Fall through to ExpVar
+ExpVar:
+	; Get var value into DE
+	
+	MVI H,VAR_SPACE/256
+	SUI 128+'A'
+	ADD A
+	MOV L,A
+	
+	MOV E,M
+	INX H
+	MOV D,M
+	
+	INX B
+	JMP ExpEvaluateOp
 	
 ExpLeftBrace:
 	; push it onto operator stack
@@ -727,20 +677,6 @@ ExpInteger:
 	INX B
 	JMP ExpEvaluateOp
 	
-ExpVar:
-	; Get var value into DE
-	
-	MVI H,VAR_SPACE/256
-	ADD A
-	MOV L,A
-	
-	MOV E,M
-	INX H
-	MOV D,M
-	
-	INX B
-	JMP ExpEvaluateOp
-	
 ExpEvaluateOp:
 	;Expecting operator or right bracket or
 	;end of expression
@@ -752,12 +688,13 @@ ExpEvaluateOp:
 	
 	LDAX B
 	
-	CPI TokenListExpr&0ffh ; operators or right bracket
+	CPI RightBraceToken&0ffh ; operators or right bracket
 	; Is it the end of the expression?
 	JC ExpApplyOp
 	
 	; or does operator on stack have GTE precedence?
 	DCR A
+	LHLD OPERATOR_STACK_PTR
 	CMP M
 	
 	JNC SkipExpApplyOp ; no, dont apply op
@@ -775,10 +712,6 @@ ExpApplyOp:
 	MVI H,TokenList/256
 	MOV L,A
 	
-	MOV A,M
-	INX H
-	MOV H,M
-	MOV L,A
 	; Push the operator function address
 	; onto the stack, and use RET to branch to
 	; it in a moment
@@ -792,7 +725,7 @@ ExpApplyOp:
 SkipExpApplyOp:
 	LDAX B
 	
-	CPI TokenListExpr&0ffh ; operators or right bracket
+	CPI RightBraceToken&0ffh ; operators or right bracket
 	; Is it the end of the expression?
 	RC
 	
@@ -810,8 +743,6 @@ SkipExpApplyOp:
 	PUSH D
 	
 	JMP ExpEvaluateNum
-	
-; If start address of all of the operator subroutines fit in 256 bytes then there is a potential saving by using only single byte in lookup table, and maybe also using this byte as the token 
 
 NotEqualSub_1:
 	; SubSub will have been executed prior to this
@@ -846,6 +777,136 @@ EqualSub_2:
 	LXI D,0
 	JMP ExpEvaluateOp
 
+; TokenList must be on same page and index to subroutine address must not overlap with other token values
+ORG 0300h
+
+TokenList:
+	DB "PRIN",'T'+128
+	DB PrintSub&0ffh
+	DB "LE",'T'+128
+	DB LetSub&0ffh
+	DB "GOT",'O'+128
+	DB GotoSub&0ffh
+	DB "GOSU",'B'+128
+	DB GosubSub&0ffh
+	DB "RETUR",'N'+128
+	DB ReturnSub&0ffh
+	DB "I",'F'+128
+	DB IfSub&0ffh
+	DB "EN",'D'+128
+	DB 0
+; Before this are keywords allowed at run-time
+	DB "THE",'N'+128
+	DB 0
+	DB "RU",'N'+128
+	DB 0
+	DB "LIS",'T'+128
+	DB 0
+	DB "CLEA",'R'+128
+	DB  0
+	DB ','+128
+	DB CommaToken
+	DB '('+128
+	DB LeftBraceSub&0ffh
+;After this label, only expect things which count as operators
+	DB ')'+128
+	DB RightBraceToken&0ffh
+	DB '<'+128
+	DB LTSub&0ffh
+	DB '>'+128
+	DB GTSub&0ffh
+	DB ">",'='+128
+	DB GTESub&0ffh
+	DB "<",'='+128
+	DB LTESub&0ffh
+	DB '='+128
+	DB EqualSub&0ffh
+	DB "<>"+128
+	DB NotEqualSub&0ffh
+	DB '-'+128
+	DB SubSub&0ffh
+	DB '+'+128
+	DB AddSub&0ffh
+	DB '*'+128
+	DB MulSub&0ffh
+	DB '/'+128
+	DB DivSub&0ffh
+NotFoundAddr:
+	DB NotFoundToken
+	
+PrintSub:
+	LDAX B
+	CPI StringToken
+	JZ PrintStringToken
+	CALL ExpEvaluate
+	PUSH B
+	CALL PrintHex4
+	POP B
+
+PrintSubEndTest:
+	LDAX B
+	INX B
+	CPI ','
+	JZ PrintSub
+	DCX B
+	; TODO print new line
+	RET
+
+LetSub:
+	; TODO test that we have var and equal sign
+	LDAX B
+	PUSH PSW
+	INX B
+	INX B
+	
+	CALL ExpEvaluate
+	
+	POP PSW
+	
+	; Put DE into var
+	
+	MVI H,VAR_SPACE/256
+	SUI 128+'A'
+	ADD A
+	MOV L,A
+	
+	MOV M,E
+	INX H
+	MOV M,D
+	
+	RET
+	
+GotoSub:
+	CALL ExpEvaluate
+	JMP GetLineNum
+	
+GosubSub: ; Depth = 1
+	CALL ExpEvaluate
+	POP H	; Preserve return address
+	PUSH B
+	PUSH H
+	JMP GetLineNum
+	
+ReturnSub:
+	;TODO - how to always detect
+	; return without GOSUB
+	; could put marker word onto stack?
+	; and inc/dec every call/return
+	; and check for marker march
+	
+	POP H	; Get return address first
+	POP B ; Get pointer to program loc to return to
+	PCHL
+
+IfSub:
+	CALL ExpEvaluate
+	MOV A,E
+	ORA D
+	RNZ
+	
+	; If DE zero then fall through to next line
+	JMP AdvanceToNextLineNum
+	
 LeftBraceSub:
 	LDAX B
 	; Is current operator a right brace?
@@ -853,31 +914,10 @@ LeftBraceSub:
 	JNZ ExpError ; expecting right brace
 	
 	INX B
+; This is a dummy label
+; to make sure that right brace token value is between LeftBraceSub and LTSub
+RightBraceToken:
 	JMP ExpEvaluateOp
-
-NotEqualSub:
-	LXI H,NotEqualSub_1
-EqualSub:
-	LXI H,EqualSub_1
-	
-SubSub:
-	MOV A,E
-	CMA
-	MOV E,A
-	MOV A,D
-	CMA
-	MOV D,A
-	INX D
-	
-AddSub:
-	; exchange H with stack top to get operand into H and return address on stack
-	XTHL
-
-	;Add DE to top of stack and keep in DE
-	DAD D
-	XCHG
-	
-	RET
 
 LTSub:
 	; Swap operands and fall through
@@ -897,62 +937,70 @@ LTESub:
 	LXI H,LTESub_1
 	JMP SubSub
 
-; TokenList must be on same page and index to subroutine address must not overlap with other token values
-ORG 0380h
+EqualSub:
+	LXI H,EqualSub_1
+	JMP SubSub
+	
+NotEqualSub:
+	LXI H,NotEqualSub_1
 
-TokenList:
-	DB "PRIN",'T'+128
-	DW PrintSub
-	DB "LE",'T'+128
-	DW LetSub
-	DB "GOT",'O'+128
-	DW GotoSub
-	DB "GOSU",'B'+128
-	DW GosubSub
-	DB "RETUR",'N'+128
-	DW ReturnSub
-	DB "I",'F'+128
-	DW IfSub
-	DB "EN",'D'+128
-	DW 0
-; Before this are keywords allowed at run-time
-	DB "THE",'N'+128
-	DW 0
-	DB "RU",'N'+128
-	DW 0
-	DB "LIS",'T'+128
-	DW 0
-	DB "CLEA",'R'+128
-	DW 0
-	DB ','+128
-	DW 0
-	DB '('+128
-LeftBraceToken:
-	DW LeftBraceSub
-;After this label, only expect things which count as operators
-TokenListExpr:
-	DB ')'+128
-RightBraceToken:
-	DW 0
-	DB '='+128
-	DW EqualSub
-	DB "<>"+128
-	DW NotEqualSub
-	DB '<'+128
-	DW LTSub
-	DB '>'+128
-	DW GTSub
-	DB "<",'='+128
-	DW LTESub
-	DB ">",'='+128
-	DW GTESub
-	DB '+'+128
-	DW AddSub
-	DB '-'+128
-	DW SubSub
-	DB '*'+128
-	DW 0
-	DB '/'+128
-	DW 0
-NotFoundAddr:
-	DB 0
+SubSub:
+	MOV A,E
+	CMA
+	MOV E,A
+	MOV A,D
+	CMA
+	MOV D,A
+	INX D
+	
+AddSub:
+	; exchange H with stack top to get operand into H and return address on stack
+	XTHL
+
+	;Add DE to top of stack and keep in DE
+	DAD D
+	XCHG
+	
+	RET
+
+MulSub:
+	POP H
+	PUSH B
+	MOV B,H
+	MOV C,L
+
+Multiply:
+;multiply BC and DE into HL
+
+	MVI A,16
+	LXI H,0
+MulLoop:
+	DAD H
+	XCHG
+	DAD H
+	XCHG
+	JNC DontAdd
+	DAD B
+DontAdd:
+
+	DCR A
+	JNZ MulLoop
+	
+	XCHG
+	POP B
+	RET
+
+DivSub:
+;Divide (SP) by DE
+	POP H
+	PUSH B
+	
+	LXI B,0 	; Accumulator starts at zero
+	; Complement DE
+	
+	DAD D
+	INX B
+	
+
+	POP B
+	RET
