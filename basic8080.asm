@@ -10,8 +10,13 @@
 ;   * and / yet to be added.
 ;   Some scope for size optimization.
 ; 2023-03-12 About 940 bytes long
-		* added
-		some reduction in code size done
+;		* added
+;		some reduction in code size done
+; 2023-03-16 About 970 bytes long
+;   unsigned / and integer output added
+;		about 30 bytea could be saved
+;		by using RST in place of call
+;   in some places
 		
 ; Memory map:
 ; system vars
@@ -28,12 +33,12 @@
 RAM_TOP equ 0800h ; 1 more than top byte of RAM
 
 ; Token values
-; 193-218 are variables
-IntegerToken equ 254 ; followed by 16-bit integer
-LinenumToken equ 255 ; followed by 16-bit integer
-StringToken equ 253; followed by 1 byte length, followed by string characters
-CommaToken equ 252
-NotFoundToken equ 251
+; 0-25 are variables
+IntegerToken equ 26 ; followed by 16-bit integer
+LinenumToken equ 27 ; followed by 16-bit integer
+StringToken equ 28 ; followed by 1 byte length, followed by string characters
+CommaToken equ 29
+NotFoundToken equ 30
 
 ; Callable tokens are low byte of subroutine to call
 
@@ -42,18 +47,6 @@ NotFoundToken equ 251
 ; E1 - end of program when looking for line
 ; EA - newline encountered in string
 ; EF - input buffer overflow
-
-ORG 0400h
-
-; For efficient access, this must be on a 256 byte boundary
-VAR_SPACE:
-	DW 0,0,0,0,0,0,0,0,0,0,0,0,0
-	DW 0,0,0,0,0,0,0,0,0,0,0,0,0
-	
-PROG_PTR:
-	DW PROG_BASE
-PROG_PARSE_PTR:
-	DW PROG_BASE
 
 ; Input buffer and operator stack can share the
 ; same memory - not used at same time
@@ -72,10 +65,61 @@ OPERATOR_STACK_BASE:
 	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 INPUT_BUFFER_END:
 
+ORG 0400h
+
+; For efficient access, this must be on a 256 byte boundary
+VAR_SPACE:
+	DW 0,0,0,0,0,0,0,0,0,0,0,0,0
+	DW 0,0,0,0,0,0,0,0,0,0,0,0,0
+	
+PROG_PTR:
+	DW PROG_BASE
+PROG_PARSE_PTR:
+	DW PROG_BASE
+
 PROG_BASE:
+
+ORG 00h
+	JMP GetLine
+	
+; Space for 5 byte subroutine
+; TODO this one is only 4 bytes, find another
+TokenNotFound:
+	; Unrecognised token
+	XRA A
+	JMP PopError
+
+ORG 08h
+
+; PutChar is called frequently
+; it can be called using RST 1
+
+PutChar:
+	; Assume that port 0 is for char I/O
+	; And port 1 is for char ready status
+	
+	OUT 0
+	RET
+
+; Space for 6 byte subroutine(s)
+Digit:
+	MVI A,'0'
+	RET
+Alpha:
+	MVI A,'A'
+	RET
+
 
 ORG 10h
 
+; GetChar can be called with RST 2
+
+GetChar:
+	IN 1
+	JZ GetChar
+	IN 0
+	RET
+	
 GetLine:
 
 	; Set stack pointer to just below input buffer
@@ -92,10 +136,7 @@ InputChar:
 	MOV A,L
 	CPI INPUT_BUFFER_END&0ffh
 	JZ InputBufferOverflow
-	MVI C,01
-	PUSH H
-	CALL 5
-	POP H
+	RST 2
 	
 	MOV M,A
 	
@@ -195,10 +236,9 @@ DiffClass:
 	JZ String
 	CPI 'A'
 	JNZ NotVar
-	MOV A,L
-	DCR A
-	CMP E
-	JZ Var
+	LDAX D
+	SUI 'A'+128	; if hi bit is set then length=1
+	JNC Var			; and it must be a var
 	
 NotVar:
 	
@@ -218,14 +258,8 @@ NotVar:
 	
 	JMP NextToken
 
-TokenNotFound:
-	; Unrecognised token
-	XRA A
-	JMP PopError
-
 Var:
-	LDAX D
-	; Token value is var letter+128
+	; Token value is var letter-'A'
 	
 	; Store var token in program
 	LHLD PROG_PARSE_PTR
@@ -241,6 +275,7 @@ Var:
 	
 Integer:
 	; The integer will be constructed in HL
+
 	LXI H,0
 	
 IntegerNext:
@@ -254,16 +289,18 @@ IntegerNext:
 	DAD H
 
 	LDAX D
-	ANI 07f
+	INX D
 	SUI '0'
-	MOV C,A
+	
 	MVI B,0
+	MOV C,A
 	DAD B
 	
-	LDAX D
-	INX D
-	ANI 128
-	JZ IntegerNext
+	JP IntegerNext
+	
+	; Subtract 128 because fhe last byte had hi bit set
+	LXI B,0ff80h
+	DAD B
 	
 	; At this point HL contains the integer
 	; DE points to tbe char after end of token
@@ -317,19 +354,19 @@ LookupToken: ; Depth = 2
 	
 	LXI H,TokenList-1
 LookupTokenNext:
-	INR L
+	INX H
 	MOV A,L
 	CPI NotFoundAddr&0ffh
 	JZ NotFoundToken
 	PUSH D
 	CALL Strcmp
 	POP D
-	CPI 0
+	CPI 080h
 	JZ FoundToken
 	
 LookupTokenFindNext:
 	MOV A,M
-	INR L
+	INX H
 	ANI 128
 	JNZ LookupTokenNext
 	JMP LookupTokenFindNext
@@ -346,16 +383,16 @@ FoundToken:
 
 ; DE points to hi-bit terminated string
 ; HL points to hi-bit terminated string
-; Returns 0 in A on match
+; Returns 128 in A on match
+; Can't have 128 as a character in D
+; (so assume that strings must be ASCII)
 Strcmp: ; Depth = 3
 	LDAX D
-	SUB M
+	CMP M
 	RNZ
 	
-	MOV A,M
 	ANI 128
-	XRI 128
-	RZ
+	RNZ
 	
 	INX D
 	INX H
@@ -363,12 +400,13 @@ Strcmp: ; Depth = 3
 
 ; DE points to start
 ; HL points to dest
-; A is length
+; A is length (max 127 bytes)
 
 ; Leaves HL pointing to char after string
 StrCpy:
-	ORA A
-	RZ
+	DCR A
+	RM		; DCR doesn't affect carry, but does 
+				; affect sign bit, so 
 	
 	PUSH PSW
 	LDAX D
@@ -378,7 +416,6 @@ StrCpy:
 	INX D
 	INX H
 	
-	DCR A
 	JMP Strcpy
 	
 
@@ -402,23 +439,31 @@ NotDigit:
 NotAlpha:
 	RET
 
-Digit:
-	MVI A,'0'
-	RET
-Alpha:
-	MVI A,'A'
-	RET
-
+; TODO base it on looking for 
+; hi bit at end of string and inline
+; outputstring
+; this could save about 10 bytes
 PrintStringToken:
 	INX B
 	LDAX B
 	INX B
-	PUSH B
-	POP H
-	CALL OutputString
-	MOV B,H
-	MOV C,L
-	RET
+	
+OutputString:
+;Pointer in B
+;Length in A
+
+	ORA A
+	RZ
+	
+	PUSH PSW
+	LDAX B
+	RST 1
+	POP PSW
+	
+	INX B
+	
+	DCR A
+	JMP OutputString
 	
 GetLineNum:
 	; Line number is in DE, look it up in the program and set BC to the position after it
@@ -548,72 +593,58 @@ ErrorLt10:
 	ADI '0'
 	PUSH PSW
 	MVI A,10
-	CALL PutChar
+	RST 1
 	MVI A,69
-	CALL PutChar
+	RST 1
 	POP PSW
-	CALL PutChar
+	RST 1
 	MVI A,10
-	CALL PutChar
+	RST 1
 	JMP Getline
 
-PutChar:
-	MOV E,A
-	MVI C,02
-	JMP 5
-
-OutputString:
-;Pointer in H
-;Length in A
-
-	PUSH B
-	
-OutputStringLoop:
+;Output the value in DE
+PrintInteger:
+	MOV A,D
 	ORA A
-	JNZ OutputStringContinue
-	POP B
+	JP PrintIntegerSkipNeg
+	MVI A,'-'
+	RST 1
+	CALL NegateDE
+	; TODO above doesnt work for the calue -32768
+	; need to wait until we have signed division to fix
+	
+PrintIntegerSkipNeg:
+	MVI A,128 ; Hi bit set means no non-zero yet
+	XCHG
+	LXI D,10000
+	CALL DivideHLPrint
+	LXI D,1000
+	CALL DivideHLPrint
+	LXI D,100
+	CALL DivideHLPrint
+	LXI D,10
+	CALL DivideHLPrint
+	MVI E,1
+	XRA A	; last digit, so print it regardless of
+			  ; whether we have already had non-zero
+			  ; digits
+	
+DivideHLPrint:
+	PUSH PSW
+	CALL DivideHL
+	POP PSW
+	XRI 128
+	CMP E
+	JNZ PrintDigit
+	
+	XRI 128
 	RET
 	
-OutputStringContinue:
+PrintDigit:
+	MOV A,E
+	ADI '0'
 	
-	MOV E,M
-	MVI C,02
-	CALL 5
-	
-	INX H
-	
-	DCR A
-	JMP OutputStringLoop
-
-;Output the value in DE
-PrintHex4:
-	call PrintHex2
-	mov d,e
-
-;Output the value in D
-PrintHex2:
-	mov a,d
-	rrc a
-	rrc a
-	rrc a
-	rrc a
-	ani 0fh
-	call PrintHex
-	mov a,d
-	ani 0fh
-
-;Output single hex value
-PrintHex:
-	adi 48
-	cpi 58
-	jc PrintHexSkip
-	adi 7
-	PrintHexSkip:
-	PUSH PSW
-	PUSH D
-	CALL PutChar
-	POP D
-	POP PSW
+	RST 1
 	RET
 
 ; BC points to program
@@ -636,17 +667,14 @@ ExpEvaluateNum:
 	JZ ExpLeftBrace
 	CPI IntegerToken
 	JZ ExpInteger
-	CPI 128+'Z'+1
+	CPI 26
 	JNC ExpError
-	CPI 128+'A'
-	JC ExpError
 	
 	; Fall through to ExpVar
 ExpVar:
 	; Get var value into DE
 	
 	MVI H,VAR_SPACE/256
-	SUI 128+'A'
 	ADD A
 	MOV L,A
 	
@@ -675,7 +703,8 @@ ExpInteger:
 	LDAX B
 	MOV D,A
 	INX B
-	JMP ExpEvaluateOp
+	
+	; Fall through to ExpEvaluateOp
 	
 ExpEvaluateOp:
 	;Expecting operator or right bracket or
@@ -777,6 +806,17 @@ EqualSub_2:
 	LXI D,0
 	JMP ExpEvaluateOp
 
+NegateDE:
+	MOV A,E
+	CMA
+	MOV E,A
+	MOV A,D
+	CMA
+	MOV D,A
+	INX D
+	
+	RET
+	
 ; TokenList must be on same page and index to subroutine address must not overlap with other token values
 ORG 0300h
 
@@ -840,7 +880,7 @@ PrintSub:
 	JZ PrintStringToken
 	CALL ExpEvaluate
 	PUSH B
-	CALL PrintHex4
+	CALL PrintInteger
 	POP B
 
 PrintSubEndTest:
@@ -849,7 +889,8 @@ PrintSubEndTest:
 	CPI ','
 	JZ PrintSub
 	DCX B
-	; TODO print new line
+	MVI A,10
+	RST 1
 	RET
 
 LetSub:
@@ -866,7 +907,6 @@ LetSub:
 	; Put DE into var
 	
 	MVI H,VAR_SPACE/256
-	SUI 128+'A'
 	ADD A
 	MOV L,A
 	
@@ -945,13 +985,7 @@ NotEqualSub:
 	LXI H,NotEqualSub_1
 
 SubSub:
-	MOV A,E
-	CMA
-	MOV E,A
-	MOV A,D
-	CMA
-	MOV D,A
-	INX D
+	CALL NegateDE
 	
 AddSub:
 	; exchange H with stack top to get operand into H and return address on stack
@@ -992,15 +1026,32 @@ DontAdd:
 
 DivSub:
 ;Divide (SP) by DE
+;Remainder in HL
+;Result in DE
+
 	POP H
-	PUSH B
+DivideHL:
+;Divide HL by DE
+
+	CALL NegateDE
 	
-	LXI B,0 	; Accumulator starts at zero
-	; Complement DE
+DivideHLNegDE:
+;Divide HL by -DE
+
+	PUSH B
+	LXI B,0ffffh ; Accumulator starts at -1
+	
+DivLoop:
+	INX B
+	DAD D
+	JC DivLoop
+
+	CALL NegateDE
 	
 	DAD D
-	INX B
-	
 
+	PUSH B
+	POP D
+	
 	POP B
 	RET
