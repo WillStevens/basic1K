@@ -18,6 +18,9 @@
 ;		by using RST in place of call
 ;   in some places
 ; 2023-03-17 About 940 bytes long
+; 2023-03-17 About 970 bytes long
+;		INPUT added 
+
 
 		
 ; Memory map:
@@ -82,14 +85,14 @@ PROG_PARSE_PTR:
 PROG_BASE:
 
 ORG 00h
-	JMP GetLine
+	JMP Ready
 	
 ; Space for 5 byte subroutine
 ; TODO this one is only 4 bytes, find another
 TokenNotFound:
 	; Unrecognised token
 	XRA A
-	JMP PopError
+	JMP Error
 
 ORG 08h
 
@@ -123,17 +126,6 @@ GetChar:
 	RET
 	
 GetLine:
-
-	; Set stack pointer to just below input buffer
-	; Do this every time to guard against
-	; GOSUB with no RETURN errors
-	
-	LXI H,INPUT_BUFFER-1
-	SPHL
-	
-	; H is also the initial pointer to input buffer
-
-InputChar:
 	INX H
 	MOV A,L
 	CPI INPUT_BUFFER_END&0ffh
@@ -143,7 +135,20 @@ InputChar:
 	MOV M,A
 	
 	CPI 10
-	JNZ InputChar
+	JNZ GetLine
+	RET
+	
+Ready:
+	; Set stack pointer to just below input buffer
+	; Do this every time to guard against
+	; GOSUB with no RETURN errors
+	
+	LXI H,INPUT_BUFFER-1
+	SPHL
+	
+	; H is also the initial pointer to input buffer
+
+	CALL Getline
 	
 	; Now we have a line terminated by chr(10)
 	; Get location of input buffer into HL
@@ -162,7 +167,7 @@ InputChar:
 	LHLD PROG_PARSE_PTR
 	SHLD PROG_PTR
 	
-	JMP GetLine
+	JMP Ready
 	
 ExecuteDirect: ; Depth = 0
 	
@@ -173,7 +178,7 @@ ExecuteDirect: ; Depth = 0
 	; Assume its RUN
 	JMP ExecuteProgram
 	
-	JMP GetLine
+	JMP Ready
 	
 NextToken: ; Depth = 1
 	; Get class of first char
@@ -201,7 +206,7 @@ NextChar:
 	MOV A,M
 	INX H
 	CPI 10
-	JZ PopError
+	JZ Error
 	CPI '"'
 	JNZ NextChar
 	
@@ -274,13 +279,15 @@ Var:
 	INX H
 	
 	JMP NextToken
-	
-Integer:
+
+ParseInteger:
+	; DE points to integer
 	; The integer will be constructed in HL
+	; on return DE points to char after int
 
 	LXI H,0
 	
-IntegerNext:
+ParseIntegerNext:
 	; Muliply by 10
 	PUSH H
 	POP B
@@ -298,11 +305,16 @@ IntegerNext:
 	MOV C,A
 	DAD B
 	
-	JP IntegerNext
+	JP ParseIntegerNext
 	
 	; Subtract 128 because fhe last byte had hi bit set
 	LXI B,0ff80h
 	DAD B
+	
+	RET
+	
+Integer:
+	CALL ParseInteger
 	
 	; At this point HL contains the integer
 	; DE points to tbe char after end of token
@@ -524,7 +536,7 @@ ATNLN_NotInt:
 	; Error, fell off end of program
 	MVI A,1
 	
-	JMP PopError
+	JMP Error
 
 ATNLN_String:
 	INX B
@@ -556,7 +568,7 @@ ExecuteProgramLoop:
 	JNZ ExecuteProgramNotEnd
 	MOV A,H
 	CMP B
-	JZ GetLine
+	JZ Ready
 	
 	; TODO need to check that we haven't ended with a GOSUB without return condition
 	; stack should be empty
@@ -585,7 +597,7 @@ ExecuteProgramNotLineNum:
 	
 	; Put pointer to call address into HL
 	MOV L,A
-	MVI H,(TokenList&0ff00h)/256
+	MVI H,PrintSub/256
 	
 	; Jump to it
 	PCHL
@@ -593,9 +605,7 @@ ExecuteProgramNotLineNum:
 InputBufferOverflow:
 	MVI A,0fh
 	JMP Error
-;Display error code in A and go back to line entry
-PopError:
-	POP H
+;Display error code in A, and go back to line entry
 Error:
 	CPI 10
 	JNZ ErrorLt10
@@ -611,7 +621,7 @@ ErrorLt10:
 	RST 1
 	MVI A,10
 	RST 1
-	JMP Getline
+	JMP Ready
 
 ;Output the value in DE
 PrintInteger:
@@ -743,7 +753,7 @@ ExpApplyOp:
 	MOV A,M
 	SHLD OPERATOR_STACK_PTR
 	
-	MVI H,TokenList/256
+	MVI H,PrintSub/256
 	MOV L,A
 	
 	; Push the operator function address
@@ -823,7 +833,7 @@ NegateDE:
 	RET
 	
 ; TokenList must be on same page and index to subroutine address must not overlap with other token values
-ORG 0300h
+ORG 02f0h
 
 TokenList:
 	DB "PRIN",'T'+128
@@ -838,16 +848,16 @@ TokenList:
 	DB ReturnSub&0ffh
 	DB "I",'F'+128
 	DB IfSub&0ffh
+	DB "INPU",'T'+128
+	DB InputSub&0ffh
 	DB "EN",'D'+128
 	DB 0
 ; Before this are keywords allowed at run-time
-	DB "THE",'N'+128
-	DB 0
 	DB "RU",'N'+128
 	DB 0
 	DB "LIS",'T'+128
 	DB 0
-	DB "CLEA",'R'+128
+	DB "NE",'W'+128
 	DB  0
 	DB ','+128
 	DB CommaToken
@@ -909,6 +919,7 @@ LetSub:
 	
 	POP PSW
 	
+AssignToVar:
 	; Put DE into var
 	
 	MVI H,VAR_SPACE/256
@@ -951,7 +962,31 @@ IfSub:
 
 	; If DE zero then fall through to next line
 	JMP AdvanceToNextLineNum
+
+InputSub:
+	; TODO there is no check for var token
+	; nor for integer input
 	
+	LXI H,INPUT_BUFFER-1
+	CALL GetLine
+	DCX H
+	MOV A,M
+	ORI 128
+	MOV M,A
+	
+	LXI D,INPUT_BUFFER
+	
+	PUSH B
+	CALL ParseInteger
+	XCHG
+	POP B
+	
+	LDAX B
+	INX B
+	
+	JMP AssignToVar
+	
+
 LeftBraceSub:
 	LDAX B
 	; Is current operator a right brace?
