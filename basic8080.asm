@@ -14,9 +14,11 @@
 ;		some reduction in code size done
 ; 2023-03-16 About 970 bytes long
 ;   unsigned / and integer output added
-;		about 30 bytea could be saved
+;		about 30 bytes could be saved
 ;		by using RST in place of call
 ;   in some places
+; 2023-03-17 About 940 bytes long
+
 		
 ; Memory map:
 ; system vars
@@ -101,12 +103,12 @@ PutChar:
 	OUT 0
 	RET
 
-; Space for 6 byte subroutine(s)
-Digit:
-	MVI A,'0'
-	RET
-Alpha:
-	MVI A,'A'
+; Space for 5 byte subroutine(s)
+PrintDigit:
+	MOV A,E
+	ADI '0'
+	
+	RST 1
 	RET
 
 
@@ -234,7 +236,7 @@ DiffClass:
 	JZ Integer
 	CPI '"'
 	JZ String
-	CPI 'A'
+	CPI 'P'
 	JNZ NotVar
 	LDAX D
 	SUI 'A'+128	; if hi bit is set then length=1
@@ -423,20 +425,26 @@ StrCpy:
 ; Return the class of a character for tokenizing
 ; Digit
 ; Alphabetical
-; LT, GT or EQ
 ; All others are distinct classes
 
 CharClass:
 	CPI '0'
-	JC NotDigit
-	CPI '9'+1
-	JC Digit
-NotDigit:
-	CPI 'A'
-	JC NotAlpha
+	RC	 			; LT '0' then return
 	CPI 'Z'+1
-	JC Alpha
-NotAlpha:
+	RNC				; GT Z then return
+	CPI '9'+1
+	JC Digit	; LTE 9 and it is a digit	
+	CPI 'A'
+	RC				; LT 'A' then return
+
+	; Otherwise fall through
+	
+Alpha:
+Digit:
+; on entry A will be 0-9 or A-Z
+; on exit it will be either 0 or P
+	ANI 60h
+	ADI 10h
 	RET
 
 ; TODO base it on looking for 
@@ -447,6 +455,9 @@ PrintStringToken:
 	INX B
 	LDAX B
 	INX B
+	
+	CALL OutputString
+	JMP PrintSubEndTest
 	
 OutputString:
 ;Pointer in B
@@ -639,13 +650,6 @@ DivideHLPrint:
 	
 	XRI 128
 	RET
-	
-PrintDigit:
-	MOV A,E
-	ADI '0'
-	
-	RST 1
-	RET
 
 ; BC points to program
 ; DE contains value
@@ -717,13 +721,14 @@ ExpEvaluateOp:
 	
 	LDAX B
 	
-	CPI RightBraceToken&0ffh ; operators or right bracket
-	; Is it the end of the expression?
+	CPI (RightBraceToken&0ffh)+1 ; operators or right bracket
+	; Is it the end of the expression or a right bracket
 	JC ExpApplyOp
 	
 	; or does operator on stack have GTE precedence?
 	DCR A
 	LHLD OPERATOR_STACK_PTR
+	DCX H
 	CMP M
 	
 	JNC SkipExpApplyOp ; no, dont apply op
@@ -886,7 +891,7 @@ PrintSub:
 PrintSubEndTest:
 	LDAX B
 	INX B
-	CPI ','
+	CPI CommaToken
 	JZ PrintSub
 	DCX B
 	MVI A,10
@@ -943,7 +948,7 @@ IfSub:
 	MOV A,E
 	ORA D
 	RNZ
-	
+
 	; If DE zero then fall through to next line
 	JMP AdvanceToNextLineNum
 	
@@ -952,11 +957,12 @@ LeftBraceSub:
 	; Is current operator a right brace?
 	CPI RightBraceToken&0ffh
 	JNZ ExpError ; expecting right brace
-	
 	INX B
+	
 ; This is a dummy label
 ; to make sure that right brace token value is between LeftBraceSub and LTSub
 RightBraceToken:
+
 	JMP ExpEvaluateOp
 
 LTSub:
@@ -998,7 +1004,8 @@ AddSub:
 	RET
 
 MulSub:
-	POP H
+	; exchange H with stack top to get operand into H and return address on stack
+	XTHL
 	PUSH B
 	MOV B,H
 	MOV C,L
@@ -1029,7 +1036,9 @@ DivSub:
 ;Remainder in HL
 ;Result in DE
 
-	POP H
+	; exchange H with stack top to get operand into H and return address on stack
+	XTHL
+
 DivideHL:
 ;Divide HL by DE
 
