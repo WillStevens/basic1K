@@ -39,9 +39,10 @@ RAM_TOP equ 0800h ; 1 more than top byte of RAM
 
 ; Token values
 ; 0-25 are variables
-IntegerToken equ 26 ; followed by 16-bit integer
+; StringToken ; 26
+IntegerToken equ 28 ; followed by 16-bit integer
 LinenumToken equ 27 ; followed by 16-bit integer
-StringToken equ 28 ; followed by 1 byte length, followed by string characters
+StringToken equ 26 ; followed by 1 byte length, followed by string characters
 CommaToken equ 29
 NotFoundToken equ 30
 
@@ -68,6 +69,7 @@ OPERATOR_STACK_PTR:
 OPERATOR_STACK_BASE:
 	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
 INPUT_BUFFER_END:
 
 ORG 0400h
@@ -162,7 +164,7 @@ Ready:
 	MOV A,M
 	CPI IntegerToken
 	JNZ ExecuteDirect
-	INR A
+	DCR A ; change int to linenum
 	MOV M,A
 	LHLD PROG_PARSE_PTR
 	SHLD PROG_PTR
@@ -494,19 +496,20 @@ GetLineNum:
 
 GetLineNumLoop:
 	INX B
-	LDAX B
-	INX B
-	CMP E
-	JNZ GetLineNumNext
-	LDAX B
-	CMP D
-	JNZ GetLineNumNext
 	
+	; Test for (BC)=DE, and return if true
+	; (after advancing BC to next token)
+	LDAX B
+	SUB E
+	MOV L,A
 	INX B
-	RET
+	LDAX B
+	INX B		; advance
+	SUB D
+	ORA L
+	RZ
 	
 GetLineNumNext:
-	INX B
 	CALL AdvanceToNextLineNum
 	JMP GetLineNumLoop
 	
@@ -515,45 +518,44 @@ AdvanceToNextLineNum:
 ; move onto the next line number
 ; or error if we fall out of program
 	LDAX B
-	CPI LinenumToken
+	
+	SUB LinenumToken
 	RZ
-	CPI StringToken
-	JZ ATNLN_String
-	CPI IntegerToken
-	JNZ ATNLN_NotInt
-	INX B
-	INX B
-ATNLN_NotInt:
-	INX B
 	
-	LDA PROG_PTR
-	CMP C
-	JNZ AdvanceToNextLineNum
-	LDA PROG_PTR+1
-	CMP B
-	JNZ AdvanceToNextLineNum
+	INR A
+	CPI (IntegerToken-LinenumToken+1)
+	JZ ATNLN_Int
+	CPI (256+StringToken-LinenumToken+1)
+	JNZ ATNLN_NotInt 
 	
-	; Error, fell off end of program
-	MVI A,1
-	
-	JMP Error
-
 ATNLN_String:
 	INX B
 	LDAX B
-	INX B
+ATNLN_Int:
 	; Add A onto BC
 	ADD C
 	MOV C,A
-	; TODO think this can be
-	; ADC B, SBB C, MOV B,A
+	
 	MVI A,0
 	ADC B
 	MOV B,A
 	
-	JMP ATNLN_NotInt
+ATNLN_NotInt:
+	INX B
 	
-
+	LHLD PROG_PTR
+	MOV A,L
+	SUB C
+	MOV L,A
+	MOV A,H
+	SUB B
+	ORA L
+	JNZ AdvanceToNextLineNum
+	
+	; Error, fell off end of program
+	INR A
+	
+	JMP Error
 
 ExecuteProgram: ; Depth = 0
 	; Point BC to first line
