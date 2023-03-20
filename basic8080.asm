@@ -51,11 +51,11 @@ NotFoundToken equ 30
 
 ; Callable tokens are low byte of subroutine to call
 
-; Errors are display as Ex where x is a hex character
-; E0 - unrecognised token during parsing
-; E1 - end of program when looking for line
-; E9 - newline encountered in string
-; E2 - input buffer overflow
+; Errors are display as Ex where x is a letter
+; Error code is the lowest 16 bits of the
+; address that called RST 3. If there is a
+; collision the shuffling subroutine might
+; resolve it.
 
 ; Input buffer and operator stack can share the
 ; same memory - not used at same time
@@ -90,14 +90,11 @@ PROG_PARSE_PTR:
 PROG_BASE:
 
 ORG 00h
-	JMP Ready
+	RST 3	; call error routine
+				; which will fall through to Ready
 	
-; Space for 5 byte subroutine
-; TODO this one is only 2 bytes, find another
-TokenNotFound:
-	; Unrecognised token
-	XRA A
-	RST 3
+; Space for 7 byte subroutine
+
 
 ORG 08h
 
@@ -132,17 +129,16 @@ GetChar:
 
 ORG 18h
 
-;Display error code in A, and go back to line entry
+;Display error code and go back to line entry
 Error:
-	POP H		; discard return address
-
-	ADI '0'
-	PUSH PSW
 	MVI A,10
 	RST 1
 	MVI A,69
 	RST 1
-	POP PSW
+	POP PSW		; discard return address and
+						; get error code
+	ANI 0fh
+	ADI 'A'
 	RST 1
 	MVI A,10
 	RST 1
@@ -182,7 +178,7 @@ GetLine:
 	INX H
 	MOV A,L
 	CPI INPUT_BUFFER_END&0ffh
-	JZ InputBufferOverflow
+	CZ Error	; input buffer overflow
 	RST 2
 	
 	MOV M,A
@@ -273,7 +269,7 @@ NotVar:
 	
 	CALL LookupToken
 	CPI NotFoundToken
-	JZ TokenNotFound
+	CZ Error
 
 	PUSH H
 	
@@ -348,7 +344,7 @@ Integer:
 	LHLD PROG_PARSE_PTR
 	MVI M,IntegerToken
 	INX H
-	MOV M,E
+	MOV M,E	; TODO code in common with var assign
 	INX H
 	MOV M,D
 	INX H
@@ -584,8 +580,6 @@ ATNLN_NotInt:
 	JNZ AdvanceToNextLineNum
 	
 	; Error, fell off end of program
-	INR A
-	
 	RST 3
 
 ExecuteProgram: ; Depth = 0
@@ -635,10 +629,6 @@ ExecuteProgramNotLineNum:
 	; Jump to it
 	PCHL
 
-InputBufferOverflow:
-	MVI A,08h
-	RST 3
-
 ;Output the value in DE
 PrintInteger:
 	MOV A,D
@@ -683,9 +673,6 @@ DivideHLPrint:
 ; in OPERATOR_STACK_PTR
 ; Operand stack - SP
 
-ExpError:
-	; TODO implement this
-
 ExpEvaluate:
 	LXI H,OPERATOR_STACK_BASE
 	SHLD OPERATOR_STACK_PTR
@@ -698,7 +685,7 @@ ExpEvaluateNum:
 	CPI IntegerToken
 	JZ ExpInteger
 	CPI 26
-	JNC ExpError
+	CNC Error
 	
 	; Fall through to ExpVar
 ExpVar:
@@ -1090,8 +1077,10 @@ DivSub:
 ;Remainder in HL
 ;Result in DE
 
-	; exchange H with stack top to get operand into H and return address on stack
+; exchange H with stack top to get operand into H and return address on stack
 	XTHL
+
+; we want HL to be negative (so that division of upto 32768 works), and DE to be positive, so change aign of operands to make tbis true
 
 DivideHL:
 ;Divide HL by DE
