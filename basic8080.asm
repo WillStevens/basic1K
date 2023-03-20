@@ -20,6 +20,9 @@
 ; 2023-03-17 About 940 bytes long
 ; 2023-03-17 About 970 bytes long
 ;		INPUT added 
+; 2023-03-19 About 960 bytes long
+;    some bug fixes
+;		 capable of playing lunar lander
 
 
 		
@@ -51,8 +54,8 @@ NotFoundToken equ 30
 ; Errors are display as Ex where x is a hex character
 ; E0 - unrecognised token during parsing
 ; E1 - end of program when looking for line
-; EA - newline encountered in string
-; EF - input buffer overflow
+; E9 - newline encountered in string
+; E2 - input buffer overflow
 
 ; Input buffer and operator stack can share the
 ; same memory - not used at same time
@@ -90,11 +93,11 @@ ORG 00h
 	JMP Ready
 	
 ; Space for 5 byte subroutine
-; TODO this one is only 4 bytes, find another
+; TODO this one is only 2 bytes, find another
 TokenNotFound:
 	; Unrecognised token
 	XRA A
-	JMP Error
+	RST 3
 
 ORG 08h
 
@@ -126,19 +129,23 @@ GetChar:
 	JZ GetChar
 	IN 0
 	RET
-	
-GetLine:
-	INX H
-	MOV A,L
-	CPI INPUT_BUFFER_END&0ffh
-	JZ InputBufferOverflow
-	RST 2
-	
-	MOV M,A
-	
-	CPI 10
-	JNZ GetLine
-	RET
+
+ORG 18h
+
+;Display error code in A, and go back to line entry
+Error:
+	POP H		; discard return address
+
+	ADI '0'
+	PUSH PSW
+	MVI A,10
+	RST 1
+	MVI A,69
+	RST 1
+	POP PSW
+	RST 1
+	MVI A,10
+	RST 1
 	
 Ready:
 	; Set stack pointer to just below input buffer
@@ -170,7 +177,20 @@ Ready:
 	SHLD PROG_PTR
 	
 	JMP Ready
+
+GetLine:
+	INX H
+	MOV A,L
+	CPI INPUT_BUFFER_END&0ffh
+	JZ InputBufferOverflow
+	RST 2
 	
+	MOV M,A
+	
+	CPI 10
+	JNZ GetLine
+	RET
+
 ExecuteDirect: ; Depth = 0
 	
 	LHLD PROG_PTR
@@ -448,8 +468,13 @@ CharClass:
 	RNC				; GT Z then return
 	CPI '9'+1
 	JC Digit	; LTE 9 and it is a digit	
+	CPI '<'
+	RC				; LT '<' then return
+	CPI '>'+1	; LTE '>' and its comp operator
+	JC CompOp
 	CPI 'A'
-	RC				; LT 'A' then return
+	RC 				; LT 'A' then return
+	
 
 	; Otherwise fall through
 	
@@ -459,6 +484,12 @@ Digit:
 ; on exit it will be either 0 or P
 	ANI 60h
 	ADI 10h
+	RET
+	
+CompOp:
+; on entry A will be < (60), = (61), > (62)
+; on exit it will be <
+	ANI 3ch
 	RET
 
 ; TODO base it on looking for 
@@ -519,13 +550,13 @@ AdvanceToNextLineNum:
 ; or error if we fall out of program
 	LDAX B
 	
-	SUB LinenumToken
+	SBI LinenumToken
 	RZ
 	
 	INR A
 	CPI (IntegerToken-LinenumToken+1)
 	JZ ATNLN_Int
-	CPI (256+StringToken-LinenumToken+1)
+	CPI (StringToken-LinenumToken+1)
 	JNZ ATNLN_NotInt 
 	
 ATNLN_String:
@@ -555,7 +586,7 @@ ATNLN_NotInt:
 	; Error, fell off end of program
 	INR A
 	
-	JMP Error
+	RST 3
 
 ExecuteProgram: ; Depth = 0
 	; Point BC to first line
@@ -605,25 +636,8 @@ ExecuteProgramNotLineNum:
 	PCHL
 
 InputBufferOverflow:
-	MVI A,0fh
-	JMP Error
-;Display error code in A, and go back to line entry
-Error:
-	CPI 10
-	JNZ ErrorLt10
-	ADI 'A'-'0'-10
-ErrorLt10:
-	ADI '0'
-	PUSH PSW
-	MVI A,10
-	RST 1
-	MVI A,69
-	RST 1
-	POP PSW
-	RST 1
-	MVI A,10
-	RST 1
-	JMP Ready
+	MVI A,08h
+	RST 3
 
 ;Output the value in DE
 PrintInteger:
@@ -795,32 +809,33 @@ NotEqualSub_1:
 	; so test for zero
 	LXI H,0ffffh
 	DAD D
-	JC NotEqualSub_2
+	CC NotEqualSub_2
 	JMP ExpEvaluateOp
-
-LTESub_1:
-	; SubSub will have been executed prior to this
-	JC EqualSub_2
 	
 NotEqualSub_2:
 	LXI D,1
-	JMP ExpEvaluateOp
+	RET
 	
 EqualSub_1:
 	; SubSub will have been executed prior to this
 	; so test for zero
 	LXI H,0ffffh
 	DAD D
-	JC EqualSub_2
 	INX D
+	CC EqualSub_2
 	JMP ExpEvaluateOp
 
-GTSub_1:
-	; SubSub will have been executed prior to this
-	JC NotEqualSub_2
-	
 EqualSub_2:
 	LXI D,0
+	RET
+	
+GTESub_1:
+	; SubSub will have been executed prior to this
+	; If hi bit of D is clear return 1, else 0
+	LXI H,08000h
+	DAD D
+	LXI D,1
+	CC EqualSub_2
 	JMP ExpEvaluateOp
 
 NegateDE:
@@ -1008,16 +1023,16 @@ LTSub:
 	XTHL
 	XCHG
 GTSub:
-	LXI H,GTSub_1
-	JMP SubSub
+	INX D
+	JMP GTESub
 
-GTESub:
+LTESub:
 	; Swap operands and fall through
 	XCHG
 	XTHL
 	XCHG
-LTESub:
-	LXI H,LTESub_1
+GTESub:
+	LXI H,GTESub_1
 	JMP SubSub
 
 EqualSub:
@@ -1026,10 +1041,8 @@ EqualSub:
 	
 NotEqualSub:
 	LXI H,NotEqualSub_1
+	JMP SubSub
 
-SubSub:
-	CALL NegateDE
-	
 AddSub:
 	; exchange H with stack top to get operand into H and return address on stack
 	XTHL
@@ -1039,6 +1052,10 @@ AddSub:
 	XCHG
 	
 	RET
+
+SubSub:
+	CALL NegateDE
+	JMP AddSub
 
 MulSub:
 	; exchange H with stack top to get operand into H and return address on stack
