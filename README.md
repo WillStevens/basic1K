@@ -1,5 +1,5 @@
 # basic8080
-A BASIC interpreter for the Intel 8080
+A 1K BASIC interpreter for the Intel 8080
 
 It will soon be the 50th birthday of the
 Intel 8080 microprocessor. This is the
