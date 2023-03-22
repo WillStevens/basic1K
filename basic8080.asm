@@ -23,6 +23,8 @@
 ; 2023-03-19 About 960 bytes long
 ;    some bug fixes
 ;		 capable of playing lunar lander
+; 2023-03-22 About 970 bytes long
+;		 signed / added
 
 
 		
@@ -77,7 +79,7 @@ INPUT_BUFFER_END:
 
 ORG 0400h
 
-; For efficient access, this must be on a 256 byte boundary
+; this must be on a 256 byte boundary
 VAR_SPACE:
 	DW 0,0,0,0,0,0,0,0,0,0,0,0,0
 	DW 0,0,0,0,0,0,0,0,0,0,0,0,0
@@ -210,9 +212,7 @@ NextToken: ; Depth = 1
 	PUSH H
 	POP D
 	
-	; If first char is double quote, then we're not yet inside the string
-	CPI '"'
-	JZ NotInString
+	INX H
 	
 NextChar:
 	; Are we in a string
@@ -231,12 +231,15 @@ NextChar:
 	; Otherwise fall through and whole string will be handled
 	
 NotInString:
-	; Is M a different class from B
+	; Is M a different class from B, or
+	; a char that can't belong to a sequence
 	MOV A,M
 	CALL CharClass
 	
 	CMP B
 	JNZ DiffClass
+	ANI 80h
+	JZ DiffClass
 	
 	INX H
 	JMP NextChar
@@ -255,11 +258,11 @@ DiffClass:
 	MOV A,B
 	CPI ' '
 	JZ NextToken
-	CPI '0'
+	CPI '0'+128
 	JZ Integer
 	CPI '"'
 	JZ String
-	CPI 'P'
+	CPI 'P'+128
 	JNZ NotVar
 	LDAX D
 	SUI 'A'+128	; if hi bit is set then length=1
@@ -477,15 +480,16 @@ CharClass:
 Alpha:
 Digit:
 ; on entry A will be 0-9 or A-Z
-; on exit it will be either 0 or P
+; on exit it will be either 0 or P with high bit set
 	ANI 60h
-	ADI 10h
+	ADI 90h
 	RET
 	
 CompOp:
 ; on entry A will be < (60), = (61), > (62)
-; on exit it will be <
+; on exit it will be < with high bit set
 	ANI 3ch
+	ORI 80h
 	RET
 
 ; TODO base it on looking for 
@@ -837,7 +841,7 @@ NegateDE:
 	RET
 	
 ; TokenList must be on same page and index to subroutine address must not overlap with other token values
-ORG 02f0h
+ORG 02d0h
 
 TokenList:
 	DB "PRIN",'T'+128
@@ -882,10 +886,10 @@ TokenList:
 	DB EqualSub&0ffh
 	DB "<>"+128
 	DB NotEqualSub&0ffh
-	DB '-'+128
-	DB SubSub&0ffh
 	DB '+'+128
 	DB AddSub&0ffh
+	DB '-'+128
+	DB SubSub&0ffh
 	DB '*'+128
 	DB MulSub&0ffh
 	DB '/'+128
@@ -995,7 +999,7 @@ LeftBraceSub:
 	LDAX B
 	; Is current operator a right brace?
 	CPI RightBraceToken&0ffh
-	JNZ ExpError ; expecting right brace
+	CNZ Error ; expecting right brace
 	INX B
 	
 ; This is a dummy label
@@ -1080,15 +1084,26 @@ DivSub:
 ; exchange H with stack top to get operand into H and return address on stack
 	XTHL
 
-; we want HL to be negative (so that division of upto 32768 works), and DE to be positive, so change aign of operands to make tbis true
-
 DivideHL:
 ;Divide HL by DE
 
-	CALL NegateDE
+	; Make HL +ve
+MOV A,H
+ORA A
+PUSH PSW
+XCHG
+CM NegateDE
+XCHG
 	
-DivideHLNegDE:
-;Divide HL by -DE
+	; Make DE -ve
+MOV A,D
+ORA A
+PUSH PSW
+CP NegateDE
+;CALL NegateDE
+	
+;Divide HL by DE
+;Assuming that HL is +ve and DE is -ve
 
 	PUSH B
 	LXI B,0ffffh ; Accumulator starts at -1
@@ -1098,12 +1113,19 @@ DivLoop:
 	DAD D
 	JC DivLoop
 
-	CALL NegateDE
-	
-	DAD D
+; Assume we want +ve remainder
+ 	CALL NegateDE
+ 	DAD D
+
 
 	PUSH B
 	POP D
 	
 	POP B
+	
+	POP PSW
+	CP NegateDE
+	POP PSW
+	CP NegateDE
+	
 	RET
