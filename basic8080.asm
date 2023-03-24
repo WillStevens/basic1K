@@ -25,6 +25,9 @@
 ;		 capable of playing lunar lander
 ; 2023-03-22 About 970 bytes long
 ;		 signed / added
+; 2023-03-24 About 950 bytes long
+;		 more code size reductions
+;		 signed integer parsing supported
 
 
 		
@@ -49,7 +52,6 @@ IntegerToken equ 28 ; followed by 16-bit integer
 LinenumToken equ 27 ; followed by 16-bit integer
 StringToken equ 26 ; followed by 1 byte length, followed by string characters
 CommaToken equ 29
-NotFoundToken equ 30
 
 ; Callable tokens are low byte of subroutine to call
 
@@ -111,12 +113,6 @@ PutChar:
 	RET
 
 ; Space for 5 byte subroutine(s)
-PrintDigit:
-	MOV A,E
-	ADI '0'
-	
-	RST 1
-	RET
 
 
 ORG 10h
@@ -135,12 +131,12 @@ ORG 18h
 Error:
 	MVI A,10
 	RST 1
-	MVI A,69
+	MVI A,'H'
 	RST 1
 	POP PSW		; discard return address and
 						; get error code
 	ANI 0fh
-	ADI 'A'
+	ADI 'I'
 	RST 1
 	MVI A,10
 	RST 1
@@ -269,12 +265,14 @@ DiffClass:
 	JNC Var			; and it must be a var
 	
 NotVar:
+	PUSH H
 	
 	CALL LookupToken
-	CPI NotFoundToken
-	CZ Error
-
-	PUSH H
+	
+	; HL points to the last char of the token we've found
+	; Advance past this then get the token value
+	INX H
+	MOV A,M
 	
 ; Store token in program
 	LHLD PROG_PARSE_PTR
@@ -385,36 +383,29 @@ String:
 ; DE points to start of token
 ; HL points 1 char after
 LookupToken: ; Depth = 2
-	PUSH H
 	
 	LXI H,TokenList-1
 LookupTokenNext:
 	INX H
-	MOV A,L
-	CPI NotFoundAddr&0ffh
-	JZ NotFoundToken
 	PUSH D
 	CALL Strcmp
 	POP D
 	CPI 080h
-	JZ FoundToken
+	RZ
 	
 LookupTokenFindNext:
 	MOV A,M
+	CPI 0
+	JZ Error
 	INX H
-	ANI 128
-	JNZ LookupTokenNext
-	JMP LookupTokenFindNext
+	ANI 128	; TODO can save a few (3?) bytes by
+					; combining with zero test above
+					; somehow, and the fal through
+					; would be the error condition
+					; and could be called using RST
+	JZ LookupTokenFindNext
 
-NotFoundToken:
-FoundToken:
-; HL points to the last char of the token we've found
-; Advance past this then get the token value
-	INX H
-	MOV A,M
-	
-	POP H
-	RET
+	JMP LookupTokenNext
 
 ; DE points to hi-bit terminated string
 ; HL points to hi-bit terminated string
@@ -635,41 +626,45 @@ ExecuteProgramNotLineNum:
 
 ;Output the value in DE
 PrintInteger:
-	MOV A,D
-	ORA A
-	JP PrintIntegerSkipNeg
-	MVI A,'-'
-	RST 1
-	CALL NegateDE
-	; TODO above doesnt work for the calue -32768
-	; need to wait until we have signed division to fix
-	
-PrintIntegerSkipNeg:
-	MVI A,128 ; Hi bit set means no non-zero yet
-	XCHG
-	LXI D,10000
-	CALL DivideHLPrint
-	LXI D,1000
-	CALL DivideHLPrint
-	LXI D,100
-	CALL DivideHLPrint
-	LXI D,10
-	CALL DivideHLPrint
-	MVI E,1
-	XRA A	; last digit, so print it regardless of
-			  ; whether we have already had non-zero
-			  ; digits
-	
-DivideHLPrint:
+	XRA A		; end marker is zero flag
 	PUSH PSW
-	CALL DivideHL
-	POP PSW
-	XRI 128
-	CMP E
-	JNZ PrintDigit
 	
-	XRI 128
-	RET
+	MOV A,D
+	ANI 80h
+	XRI 080h+'-'	
+	PUSH PSW		; sign bit clear if negative
+							; zero flag clear
+	CP NegateDE
+	
+PrintIntegerLoop:
+	XCHG
+	LXI D,10
+	
+	CALL DivideHL
+	; HL contains remainder after / 10
+	; DE contains the quotient
+	
+	MOV A,L
+	ADI '0'
+	MOV H,A
+	XTHL		; swap (SP) (sign) with remainder
+					; Top 2 bits of L are clear
+					; so sign and zero will be clear
+					; when this value is popped into
+					; PSW
+	PUSH H	; and push sign back
+	
+	; if DE is zero we are done
+	MOV A,D
+	ORA E
+	JNZ PrintIntegerLoop
+	
+PrintIntegerLoop2:
+	POP PSW
+	RZ
+	CP PutChar
+	JMP PrintIntegerLoop2
+	
 
 ; BC points to program
 ; DE contains value
@@ -688,6 +683,8 @@ ExpEvaluateNum:
 	JZ ExpLeftBrace
 	CPI IntegerToken
 	JZ ExpInteger
+	CPI SubSub&0xff
+	JZ ExpNegate
 	CPI 26
 	CNC Error
 	
@@ -705,6 +702,12 @@ ExpVar:
 	
 	INX B
 	JMP ExpEvaluateOp
+	
+ExpNegate:
+	; Put 0 onto stack and - onto
+	; operator stack
+	LXI D,0
+	PUSH D
 	
 ExpLeftBrace:
 	; push it onto operator stack
@@ -830,6 +833,7 @@ GTESub_1:
 	JMP ExpEvaluateOp
 
 NegateDE:
+	;flags are not affected
 	MOV A,E
 	CMA
 	MOV E,A
@@ -859,14 +863,14 @@ TokenList:
 	DB "INPU",'T'+128
 	DB InputSub&0ffh
 	DB "EN",'D'+128
-	DB 0
+	DB 1
 ; Before this are keywords allowed at run-time
 	DB "RU",'N'+128
-	DB 0
+	DB 1
 	DB "LIS",'T'+128
-	DB 0
+	DB 1
 	DB "NE",'W'+128
-	DB  0
+	DB  1
 	DB ','+128
 	DB CommaToken
 	DB '('+128
@@ -894,8 +898,7 @@ TokenList:
 	DB MulSub&0ffh
 	DB '/'+128
 	DB DivSub&0ffh
-NotFoundAddr:
-	DB NotFoundToken
+	DB 0	; zero can only occur at the end
 	
 PrintSub:
 	LDAX B
