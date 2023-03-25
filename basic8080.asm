@@ -28,6 +28,8 @@
 ; 2023-03-24 About 950 bytes long
 ;		 more code size reductions
 ;		 signed integer parsing supported
+; 2023-03-24 About 940 bytes long
+;    more code size reductions
 
 
 		
@@ -674,7 +676,6 @@ PrintIntegerLoop2:
 
 ExpEvaluate:
 	LXI H,OPERATOR_STACK_BASE
-	SHLD OPERATOR_STACK_PTR
 
 ExpEvaluateNum:
 	; Expecting ( var integer
@@ -691,6 +692,7 @@ ExpEvaluateNum:
 	; Fall through to ExpVar
 ExpVar:
 	; Get var value into DE
+	PUSH H
 	
 	MVI H,VAR_SPACE/256
 	ADD A
@@ -701,6 +703,8 @@ ExpVar:
 	MOV D,M
 	
 	INX B
+	
+	POP H
 	JMP ExpEvaluateOp
 	
 ExpNegate:
@@ -711,10 +715,8 @@ ExpNegate:
 	
 ExpLeftBrace:
 	; push it onto operator stack
-	LHLD OPERATOR_STACK_PTR
 	MOV M,A
 	INX H
-	SHLD OPERATOR_STACK_PTR
 	
 	INX B
 	JMP ExpEvaluateNum
@@ -728,14 +730,20 @@ ExpInteger:
 	MOV D,A
 	INX B
 	
-	; Fall through to ExpEvaluateOp
+	JMP ExpEvaluateOp
+
+ExpEvaluateOpRestore:
+	LHLD OPERATOR_STACK_PTR
 	
 ExpEvaluateOp:
 	;Expecting operator or right bracket or
 	;end of expression
 	
 	;Are there operators on the stack?
-	LDA OPERATOR_STACK_PTR
+	MOV A,L
+	DCX H	; decrement now in anticipation of
+				; needing to look at the top
+				; in a moment
 	CPI OPERATOR_STACK_BASE&0ffh
 	JZ SkipExpApplyOp
 	
@@ -747,8 +755,6 @@ ExpEvaluateOp:
 	
 	; or does operator on stack have GTE precedence?
 	DCR A
-	LHLD OPERATOR_STACK_PTR
-	DCX H
 	CMP M
 	
 	JNC SkipExpApplyOp ; no, dont apply op
@@ -758,10 +764,17 @@ ExpApplyOp:
 	; this also handles the case when a
 	; left brace is encountered
 	
-	LHLD OPERATOR_STACK_PTR
-	DCX H
 	MOV A,M
+	; Store operator stack pointer, it
+	; will be restored on return from operator
 	SHLD OPERATOR_STACK_PTR
+	; TODO - could save a few bytes
+	; with XTHL PUSH H here, and then
+	; POP H to restore
+	; but this means that all operators
+	; need to consume a stack item - or if they
+	; don't then fix the stack - which could
+	; use more bytes than saved
 	
 	MVI H,PrintSub/256
 	MOV L,A
@@ -772,11 +785,13 @@ ExpApplyOp:
 	PUSH H
 	; Put the address that we want to return to
 	; into HL. 
-	LXI H,ExpEvaluateOp
+	LXI H,ExpEvaluateOpRestore
 	
 	RET	; Jump to operator function
 	
 SkipExpApplyOp:
+	INX H	; undo the DCX that was done prior to jump
+	
 	LDAX B
 	
 	CPI RightBraceToken&0ffh ; operators or right bracket
@@ -784,10 +799,8 @@ SkipExpApplyOp:
 	RC
 	
 	; Push onto the operator stack
-	LHLD OPERATOR_STACK_PTR
 	MOV M,A
 	INX H
-	SHLD OPERATOR_STACK_PTR
 
 	; move onto next token
 	INX B
@@ -804,7 +817,7 @@ NotEqualSub_1:
 	LXI H,0ffffh
 	DAD D
 	CC NotEqualSub_2
-	JMP ExpEvaluateOp
+	JMP ExpEvaluateOpRestore
 	
 NotEqualSub_2:
 	LXI D,1
@@ -817,7 +830,7 @@ EqualSub_1:
 	DAD D
 	INX D
 	CC EqualSub_2
-	JMP ExpEvaluateOp
+	JMP ExpEvaluateOpRestore
 
 EqualSub_2:
 	LXI D,0
@@ -830,7 +843,7 @@ GTESub_1:
 	DAD D
 	LXI D,1
 	CC EqualSub_2
-	JMP ExpEvaluateOp
+	JMP ExpEvaluateOpRestore
 
 NegateDE:
 	;flags are not affected
@@ -1009,7 +1022,7 @@ LeftBraceSub:
 ; to make sure that right brace token value is between LeftBraceSub and LTSub
 RightBraceToken:
 
-	JMP ExpEvaluateOp
+	JMP ExpEvaluateOpRestore
 
 LTSub:
 	; Swap operands and fall through
