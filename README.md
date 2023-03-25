@@ -21,3 +21,11 @@ basic8080 is tokenised rather than being
 parsed at run-time. Whether or not this
 is a net benefit for code size remains to
 be seen.
+
+I learned BASIC in the 1980s on the
+ZX Spectrum and BBC Micro. An appealing
+feature of the language for beginners is
+that it builds on concepts that are already
+familiar to most people - following
+sequences of numbered steps, and the syntax
+of mathematical expressions.
