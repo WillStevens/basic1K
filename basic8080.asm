@@ -30,9 +30,12 @@
 ;		 signed integer parsing supported
 ; 2023-03-24 About 940 bytes long
 ;    more code size reductions
+; 2023-03-27 About 950 bytes long
+;		 simplified operator calling and
+;		 simplified a few operators
+;		 working on memory rotate function needed
+;		 for line deletion and insertion
 
-
-		
 ; Memory map:
 ; system vars
 ; var space : 52 bytes
@@ -52,6 +55,9 @@ RAM_TOP equ 0800h ; 1 more than top byte of RAM
 ; StringToken ; 26
 IntegerToken equ 28 ; followed by 16-bit integer
 LinenumToken equ 27 ; followed by 16-bit integer
+										; followed by 1 byte length
+										; followed by 2 byte ptr
+										; to next line (0 = end)
 StringToken equ 26 ; followed by 1 byte length, followed by string characters
 CommaToken equ 29
 
@@ -59,7 +65,7 @@ CommaToken equ 29
 
 ; Errors are display as Ex where x is a letter
 ; Error code is the lowest 16 bits of the
-; address that called RST 3. If there is a
+; address that called RST 4. If there is a
 ; collision the shuffling subroutine might
 ; resolve it.
 
@@ -96,7 +102,7 @@ PROG_PARSE_PTR:
 PROG_BASE:
 
 ORG 00h
-	RST 3	; call error routine
+	RST 4 ; call error routine
 				; which will fall through to Ready
 	
 ; Space for 7 byte subroutine
@@ -126,10 +132,26 @@ GetChar:
 	JZ GetChar
 	IN 0
 	RET
-
+	
 ORG 18h
 
+CompareHLDE:
+; compare HL and DE, return
+; Z if equal, NZ if not equal
+	MOV A,L
+	SUB E
+	RNZ
+	MOV A,H
+	SUB D
+	RET
+	
+; 2 bytes free
+
+ORG 20h
+
 ;Display error code and go back to line entry
+;TODO waste to have this as RST because its
+; usually called with condition test
 Error:
 	MVI A,10
 	RST 1
@@ -161,18 +183,76 @@ Ready:
 
 	CALL NextToken
 	
-	; If first token was an int, change it to a line no. marker and add the line to the program
-	
 	LHLD PROG_PTR
 	MOV A,M
 	CPI IntegerToken
 	JNZ ExecuteDirect
-	DCR A ; change int to linenum
+
+	; Is it an integer all by itself? 
+	; If so then delete the line
+	LDA PROG_PARSE_PTR
+	SBI 3
+	CMP L
+	JZ DeleteProgramLine
+
+	; If first token was an int, change it to a
+	; LinenimToken and add the line to the program
+	
+	DCR A
 	MOV M,A
 	LHLD PROG_PARSE_PTR
 	SHLD PROG_PTR
 	
 	JMP Ready
+
+DeleteProgramLine:
+	; TODO still working on this
+	; set PROG_PARSE_PTR back to PROG_PTR
+	SHLD PROG_PARSE_PTR
+	
+	INX H
+	MOV E,M
+	INX H
+	MOV D,M
+	
+	CALL GetLineNum
+	JNZ Ready		; if line not found, do nothing
+	
+	PUSH B
+	CALL AdvanceToNextLineNum
+	
+	; (SP) = first
+	; PROG_PTR = last
+	; BC = middle
+	
+	; next = middle
+	MOV H,B
+	MOV L,C
+	
+DPL_Loop:
+	; while (first!=next)
+	
+	; swap (*first++,*next++);
+	MOV D,M
+	XTHL
+	MOV A,M
+	MOV M,D
+	XTHL
+	MOV M,A
+
+	XCHG
+	LHLD PROG_PTR
+	MOV A,L
+	SUB E
+	
+    
+;  if (next==last) next=middle;
+; else if (first==middle) middle=next;
+; }
+	
+	JMP Ready
+
+MemoryShift:
 
 GetLine:
 	INX H
@@ -516,6 +596,8 @@ OutputString:
 	
 GetLineNum:
 	; Line number is in DE, look it up in the program and set BC to the position after it
+	; return with Z set if successful
+	; Z clear if not successful
 	LXI B,PROG_BASE
 
 GetLineNumLoop:
@@ -535,12 +617,15 @@ GetLineNumLoop:
 	
 GetLineNumNext:
 	CALL AdvanceToNextLineNum
+	RNZ
 	JMP GetLineNumLoop
 	
 AdvanceToNextLineNum:
 ; BC is a pointer to somewhere in the program
 ; move onto the next line number
-; or error if we fall out of program
+; return with Z set if successful
+; Z clear jf fell off end of program
+
 	LDAX B
 	
 	SBI LinenumToken
@@ -577,7 +662,9 @@ ATNLN_NotInt:
 	JNZ AdvanceToNextLineNum
 	
 	; Error, fell off end of program
-	RST 3
+	;!Return with Z flag clear
+	INR A
+	RET
 
 ExecuteProgram: ; Depth = 0
 	; Point BC to first line
@@ -768,26 +855,22 @@ ExpApplyOp:
 	; Store operator stack pointer, it
 	; will be restored on return from operator
 	SHLD OPERATOR_STACK_PTR
-	; TODO - could save a few bytes
-	; with XTHL PUSH H here, and then
-	; POP H to restore
-	; but this means that all operators
-	; need to consume a stack item - or if they
-	; don't then fix the stack - which could
-	; use more bytes than saved
 	
-	MVI H,PrintSub/256
-	MOV L,A
-	
-	; Push the operator function address
-	; onto the stack, and use RET to branch to
-	; it in a moment
-	PUSH H
 	; Put the address that we want to return to
 	; into HL. 
 	LXI H,ExpEvaluateOpRestore
+	XTHL	; exhange with operand
+	PUSH H	; put operand back onto stack
 	
-	RET	; Jump to operator function
+	; Address that we want to call into HL
+	MVI H,PrintSub/256
+	MOV L,A
+	
+	; Exchange with operand
+	XTHL
+	
+	; use RET to call it
+ 	RET
 	
 SkipExpApplyOp:
 	INX H	; undo the DCX that was done prior to jump
@@ -810,40 +893,6 @@ SkipExpApplyOp:
 	PUSH D
 	
 	JMP ExpEvaluateNum
-
-NotEqualSub_1:
-	; SubSub will have been executed prior to this
-	; so test for zero
-	LXI H,0ffffh
-	DAD D
-	CC NotEqualSub_2
-	JMP ExpEvaluateOpRestore
-	
-NotEqualSub_2:
-	LXI D,1
-	RET
-	
-EqualSub_1:
-	; SubSub will have been executed prior to this
-	; so test for zero
-	LXI H,0ffffh
-	DAD D
-	INX D
-	CC EqualSub_2
-	JMP ExpEvaluateOpRestore
-
-EqualSub_2:
-	LXI D,0
-	RET
-	
-GTESub_1:
-	; SubSub will have been executed prior to this
-	; If hi bit of D is clear return 1, else 0
-	LXI H,08000h
-	DAD D
-	LXI D,1
-	CC EqualSub_2
-	JMP ExpEvaluateOpRestore
 
 NegateDE:
 	;flags are not affected
@@ -958,14 +1007,16 @@ AssignToVar:
 	
 GotoSub:
 	CALL ExpEvaluate
-	JMP GetLineNum
+	CALL GetLineNum
+	JNZ Error
 	
 GosubSub: ; Depth = 1
 	CALL ExpEvaluate
 	POP H	; Preserve return address
 	PUSH B
 	PUSH H
-	JMP GetLineNum
+	CALL GetLineNum
+	JNZ Error
 	
 ReturnSub:
 	;TODO - how to always detect
@@ -1022,51 +1073,51 @@ LeftBraceSub:
 ; to make sure that right brace token value is between LeftBraceSub and LTSub
 RightBraceToken:
 
-	JMP ExpEvaluateOpRestore
+	RET
 
-LTSub:
+GTSub:
 	; Swap operands and fall through
 	XCHG
-	XTHL
-	XCHG
-GTSub:
-	INX D
-	JMP GTESub
-
+LTSub:
+	DCX D
 LTESub:
 	; Swap operands and fall through
 	XCHG
-	XTHL
-	XCHG
 GTESub:
-	LXI H,GTESub_1
-	JMP SubSub
+	CALL SubSub
 
+GTESub_1:
+	; SubSub will have been executed prior to this
+	; If hi bit of D is clear return 1, else 0
+	MVI A,80h
+	ANA D
+	JMP EqualSub_1
+	
 EqualSub:
-	LXI H,EqualSub_1
-	JMP SubSub
+	RST 3 ; returns Z iff HL=DE
+EqualSub_1:
+	LXI D,1
+	RZ
+	DCX D
+	RET
 	
 NotEqualSub:
-	LXI H,NotEqualSub_1
-	JMP SubSub
+	RST 3 ; returns Z iff HL=DE
+	LXI D,0
+	RZ
+	INX D
+	RET
 
+SubSub:
+	CALL NegateDE
 AddSub:
-	; exchange H with stack top to get operand into H and return address on stack
-	XTHL
-
 	;Add DE to top of stack and keep in DE
 	DAD D
 	XCHG
 	
 	RET
 
-SubSub:
-	CALL NegateDE
-	JMP AddSub
-
 MulSub:
-	; exchange H with stack top to get operand into H and return address on stack
-	XTHL
 	PUSH B
 	MOV B,H
 	MOV C,L
@@ -1096,9 +1147,6 @@ DivSub:
 ;Divide (SP) by DE
 ;Remainder in HL
 ;Result in DE
-
-; exchange H with stack top to get operand into H and return address on stack
-	XTHL
 
 DivideHL:
 ;Divide HL by DE
