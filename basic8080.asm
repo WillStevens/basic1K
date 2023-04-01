@@ -102,10 +102,9 @@ PROG_PARSE_PTR:
 PROG_BASE:
 
 ORG 00h
-	RST 4 ; call error routine
-				; which will fall through to Ready
+	JMP Ready
 	
-; Space for 7 byte subroutine
+; Space for 5 byte subroutine
 
 
 ORG 08h
@@ -155,12 +154,12 @@ ORG 20h
 Error:
 	MVI A,10
 	RST 1
-	MVI A,'H'
+	MVI A,'E'
 	RST 1
 	POP PSW		; discard return address and
 						; get error code
 	ANI 0fh
-	ADI 'I'
+	ADI 'A'
 	RST 1
 	MVI A,10
 	RST 1
@@ -196,10 +195,9 @@ Ready:
 	JZ DeleteProgramLine
 
 	; If first token was an int, change it to a
-	; LinenimToken and add the line to the program
+	; LinenumToken and add the line to the program
 	
-	DCR A
-	MOV M,A
+	MVI M,LinenumToken
 	LHLD PROG_PARSE_PTR
 	SHLD PROG_PTR
 	
@@ -1069,11 +1067,17 @@ LeftBraceSub:
 	CNZ Error ; expecting right brace
 	INX B
 	
-; This is a dummy label
-; to make sure that right brace token value is between LeftBraceSub and LTSub
+; This is a dummy label that is never called
+; to make sure that right brace token value is between LeftBraceSub and GTSub
 RightBraceToken:
 
-	RET
+	; Because tbis operator doesn't consume an
+	; operand, the thing in HL isn't an
+	; operand and needs to be exchanged with
+	; the return address on the stack
+
+	XTHL	; exchange with return address
+	PCHL	; jump to return address
 
 GTSub:
 	; Swap operands and fall through
@@ -1111,7 +1115,7 @@ NotEqualSub:
 SubSub:
 	CALL NegateDE
 AddSub:
-	;Add DE to top of stack and keep in DE
+	;Add DE to HL and keep in DE
 	DAD D
 	XCHG
 	
