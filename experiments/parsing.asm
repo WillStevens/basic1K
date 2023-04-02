@@ -7,6 +7,14 @@
 ; Integers are parsed in a similar way to other
 ; tokens, but special hooks for getting the
 ; value
+;
+; 133 + 97 bytes, not including string or
+; var parsing, or writing output. So it will
+; end up beinf about 300 bytes long, saving
+; about 200 bytes. 
+;
+; maybe 30-40  more could be saved using top 2 
+; bits in tokenlistbinstead of # | ^ [
 
 org 0h
 
