@@ -4,40 +4,53 @@
 ; A single pointer into TokenList
 ; tracks the parse state. Tokens with common
 ; prefixes are handled using a 'choice' symbol.
-; Integers are parsed in a similar way to other
-; tokens, but special hooks for getting the
-; value
+; Integers and strings are parsed in a similar 
+; way to other tokens, but with special hooks
+; for getting the value
 ;
+; 2023-04-03
 ; 133 + 97 bytes, not including string or
 ; var parsing, or writing output. So it will
-; end up beinf about 300 bytes long, saving
+; end up being about 300 bytes long, saving
 ; about 200 bytes. 
 ;
-; maybe 30-40  more could be saved using top 2 
-; bits in tokenlistbinstead of # | ^ [
+; 2023-04-04
+; 154 + 89, not including var parsing or
+; writing string output
+;
+; maybe 30-40  more o could be saved using top 2 
+; bits in tokenlist rather than ] | ^ [
 
 org 0h
 
 JMP Start
 
+OutputBuffer:
+	DB 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
 TestLine:
 DB "10 IF 3<A PRINT 123",0
 
-
+OUTPUT_PTR:
+	DW OutputBuffer
+	
 INT_VALUE:
 	DW 0
 Start:
 	LXI B,TestLine
 	
-	LXI H,TokenListEnd
+	LXI H,TokenList
 	
 StartLoop:
 	
 	LDAX B
+	PUSH B
 	CPI 0
 	JZ Stop
 	MOV E,A
 	CNZ TokenParse
+	POP B
+	
 	INX B
 	
 	JMP StartLoop
@@ -48,24 +61,44 @@ Stop:
 
 org 100h
 
+TP_Output:
+	; output what we have, then goto
+	; initial state
+	
+	MOV A,L
+	LHLD OUTPUT_PTR
+	CPI (TL_SpaceEnd&0ffh)
+	JZ TP_SpaceToken
+	CPI (TL_IntEnd&0ffh)
+	JNZ TP_NotIntToken
+	
+	MOV M,A
+	INX H
+	LDA INT_VALUE
+	MOV M,A
+	INX H
+	LDA INT_VALUE+1
+TP_NotIntToken:
+	MOV M,A
+	INX H
+	
+	SHLD OUTPUT_PTR
+	
+	LXI H,0
+	SHLD INT_VALUE
+
+TP_SpaceToken:
+	LXI H,TokenList
+	
+	; fall through to TokenParse
 
 ; E contains fhe char to parse
 ; HL is a pointer into TokenList
-; or TokenListEnd to identify initial parse state
+; or TokenList to identify initial parse state
 
 ; HL always points to the position after the
 ; character we've dealt with
 TokenParse:
-	; First of all, if we are part way through an 
-	; int then point back to choice symbol
-	MOV A,L
-	CPI (TL_IntPartial&0ffh)
-	JNZ TP_NotInt
-	
-	DCX H
-	
-TP_NotInt:
-
 	; if we have a digit then accumulate the value
 	MOV A,E
 	CPI '0'
@@ -77,7 +110,7 @@ TP_Digit:
 	PUSH H
 	LHLD INT_VALUE
 	
-; Muliply by 10
+; Multiply by 10
 	PUSH H
 	POP D
 	
@@ -103,14 +136,6 @@ TP_Digit:
 	
 TP_NotDigit:
 
-	; Are we in the initial parse state?
-	MOV A,L
-	CPI (TokenListEnd&0ffh)
-	
-	JZ TP_InitialState
-	
-	; No, not in initial parse state
-	
 	MOV A,M
 	CPI '['
 	JNZ TP_NotChoice
@@ -120,108 +145,96 @@ TP_ChoiceTestNext:
 	; If we have reached the end of choices and we
 	; are in the test next state, then output
 	MOV A,M
-	CPI '#'
+	CPI ']'
 	JZ TP_Output
-	CPI '^'
-	JZ TP_Output
+	
 	CMP E
 	INX H
 	RZ ; if match and in test next state then return
 	
+	; deal with special characters
+	CPI '1'
+	JZ TP_MatchOne
+	CPI '.' 
+	JZ TP_MatchDot
+	
 TP_ChoiceLoop:
 	MOV A,M
-	CPI '#'
-	JZ TP_InitialState
+	CPI ']'
+	JZ TP_SyntaxError
 	CPI '|'
 	JZ TP_ChoiceTestNext
+	CPI '['
+	CZ TP_SkipNest
 	INX H
 	JMP TP_ChoiceLoop
+
+TP_SkipNest:
+	INX H
+	MOV A,M
+	CPI ']'
+	JNZ TP_SkipNest
+	RET
 	
 TP_NotChoice:
-	CPI '#'
+	CPI '|'
 	JZ TP_Output
-	CPI '^'
-	JZ TP_Output
+	CPI ']'
+	JZ TP_SyntaxError
 	
-TP_NotEnd:
 	; does char match?
 	CMP E
 	INX H
 	RZ
 	
-	; otherwise no match, revert to initial state
-	
-TP_InitialState:
-	; In initial parse state, so lookup char
-	; in TokenList
-	
-	LXI H,TokenList
-TP_Loop1:
-	MOV A,L
-	CPI (TokenListEnd&0ffh)
-	
-	RZ	; if not found then we are in initial
-			; parse state
-	
-	; compare to input char
-	MOV A,M
-	CMP E
-TP_LookForEnd:
-	MOV A,M ; to use in 
-	INX H
-	
-	RZ	; if found then return
-	
-	; if its an end marker then compare next char
-	CPI '#'
-	JZ TP_Loop1
-	
-	; otherwise keep looking
-	JMP TP_LookForEnd
+	; otherwise no match, syntax error
+TP_SyntaxError:
+	RET
 
-TP_Output:
-	; output what we have, then goto
-	; initial state
+TP_MatchOne:
+	DCR A
+	CMP E
+	JNZ TP_ChoiceLoop
+	DCX H
+	DCX H
+	RET
 	
-	MOV A,L
-	CPI (TL_IntEnd&0ffh)
-	JNZ TP_NotIntToken
-	
-	LXI H,0
-	SHLD INT_VALUE
-	
-	JMP TP_InitialState
-	
-TP_NotIntToken:
-	
-	; output token value
-	; when testing, put breakpoint here
-	
-	JMP TP_InitialState
+TP_MatchDot:
+	; TODO this is where we
+	; copy string contents to PROG_PTR
+	DCX H
+	RET
+
+
 	
 org 200h
 
 TokenList:
-	DB "0[0"
-TL_IntPartial:
+; 0 means any digit
+; 1 means digit repeated any number of times
+	DB "[ "
+TL_SpaceEnd:
 	DB "|"
+	DB "0[1|"
 TL_IntEnd:
-	DB "#"	; This assists with integer parsing
-	DB "PRINT#"
-	DB "LET#"
-	DB "GO[TO^|SUB#"
-	DB "R[ETURN^|UN#"
-	DB "I[NPUT^|F#"
-	DB "END#"
-	DB "RUN#"
-	DB "LIST#"
-	DB "NEW#"
-	DB ",#"
-	DB "(#)#"
-	DB "<[=^|>^|#"
-	DB ">[=^|#"
-	DB "=#"
-	DB "+#-#*#/#"
+	DB "]"
+; . means any character repeated
+; any number of times
+	DB 34,"[",34,"|.]"
+	DB "PRINT|"
+	DB "LET|"
+	DB "GO[TO|SUB]"
+	DB "R[ETURN|UN]"
+	DB "I[NPUT|F]"
+	DB "END|"
+	DB "LIST|"
+	DB "NEW|"
+	DB ",|"
+	DB "(|)|"
+	DB "<[=|>|]"
+	DB ">[=|]"
+	DB "=|"
+	DB "+|-|*|/]"
 TokenListEnd:
-	DB 0	; zero can only occur at the end
+	DB 0	
 	
