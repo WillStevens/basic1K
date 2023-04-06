@@ -29,7 +29,7 @@ OutputBuffer:
 	DB 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 
 TestLine:
-DB "10 IF 3<A PRINT 123",0
+DB "10 PRINT 3<A PRINT 123",0
 
 OUTPUT_PTR:
 	DW OutputBuffer
@@ -99,12 +99,76 @@ TP_SpaceToken:
 ; HL always points to the position after the
 ; character we've dealt with
 TokenParse:
-	; if we have a digit then accumulate the value
+	MOV A,M
+	CPI '['
+	JNZ TP_NotChoice
+	
+TP_ChoiceTestNext:
+	INX H
+	; If we have reached the end of choices and we
+	; are in the test next state, then output
+	MOV A,M
+	CPI ']'
+	JZ TP_Output
+	
+	INX H
+	
+	; deal with special characters
+	CPI '0'
+	JZ TP_MatchZero
+	CPI '1'
+	JZ TP_MatchOne
+	CPI '.' 
+	JZ TP_MatchDot
+	CMP E
+	RZ ; if match and in test next state return
+	
+TP_ChoiceLoop:
+	MOV A,M
+	CPI ']'
+	JZ TP_SyntaxError
+	CPI '|'
+	JZ TP_ChoiceTestNext
+	CPI '['
+	JZ TP_SkipNest
+	INX H
+	JMP TP_ChoiceLoop
+
+TP_SkipNest:
+	INX H
+	MOV A,M
+	CPI ']'
+	JNZ TP_SkipNest
+	JMP TP_ChoiceTestNext
+	
+TP_NotChoice:
+	CPI '|'
+	JZ TP_Output
+	CPI ']'
+	JZ TP_SyntaxError
+	
+	; does char match?
+	CMP E
+	INX H
+	RZ
+	
+	; otherwise no match, syntax error
+TP_SyntaxError:
+	RET
+
+; returns carry set if digit, clear otherwise
+TP_IsDigit:
 	MOV A,E
 	CPI '0'
-	JC TP_NotDigit
+  CMC
+	RNC
 	CPI '9'+1
-	JNC TP_NotDigit
+	RET
+	
+TP_MatchZero:
+: if we have a digit then accumulate the value
+	CALL TP_IsDigit
+	JNC TP_ChoiceLoop
 	
 TP_Digit:
 	PUSH H
@@ -128,80 +192,19 @@ TP_Digit:
 	SHLD INT_VALUE
 	POP H
 	
-	; From this point treat all
-	; digits like 0
-	MVI A,'0'
-	MOV E,A
-	
-	
-TP_NotDigit:
-
-	MOV A,M
-	CPI '['
-	JNZ TP_NotChoice
-	
-TP_ChoiceTestNext:
-	INX H
-	; If we have reached the end of choices and we
-	; are in the test next state, then output
-	MOV A,M
-	CPI ']'
-	JZ TP_Output
-	
-	CMP E
-	INX H
-	RZ ; if match and in test next state then return
-	
-	; deal with special characters
-	CPI '1'
-	JZ TP_MatchOne
-	CPI '.' 
-	JZ TP_MatchDot
-	
-TP_ChoiceLoop:
-	MOV A,M
-	CPI ']'
-	JZ TP_SyntaxError
-	CPI '|'
-	JZ TP_ChoiceTestNext
-	CPI '['
-	CZ TP_SkipNest
-	INX H
-	JMP TP_ChoiceLoop
-
-TP_SkipNest:
-	INX H
-	MOV A,M
-	CPI ']'
-	JNZ TP_SkipNest
 	RET
 	
-TP_NotChoice:
-	CPI '|'
-	JZ TP_Output
-	CPI ']'
-	JZ TP_SyntaxError
-	
-	; does char match?
-	CMP E
-	INX H
-	RZ
-	
-	; otherwise no match, syntax error
-TP_SyntaxError:
-	RET
-
 TP_MatchOne:
-	DCR A
-	CMP E
-	JNZ TP_ChoiceLoop
+	CALL TP_IsDigit
+	JNC TP_ChoiceLoop
 	DCX H
 	DCX H
-	RET
+	JMP TP_Digit
 	
 TP_MatchDot:
 	; TODO this is where we
 	; copy string contents to PROG_PTR
+	DCX H
 	DCX H
 	RET
 
@@ -220,7 +223,9 @@ TL_IntEnd:
 	DB "]"
 ; . means any character repeated
 ; any number of times
-	DB 34,"[",34,"|.]"
+	DB 34
+	DB "["
+	DB 34,"|.]"
 	DB "PRINT|"
 	DB "LET|"
 	DB "GO[TO|SUB]"
