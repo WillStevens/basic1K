@@ -120,6 +120,8 @@ TP_ChoiceTestNext:
 	JZ TP_MatchOne
 	CPI '.' 
 	JZ TP_MatchDot
+	CPI 'a'
+	JZ TP_MatchAlpha
 	CMP E
 	RZ ; if match and in test next state return
 	
@@ -130,7 +132,8 @@ TP_ChoiceLoop:
 	CPI '|'
 	JZ TP_ChoiceTestNext
 	CPI '['
-	JZ TP_SkipNest
+	CZ TP_SkipNest ; Z must be set on return
+	JZ TP_ChoiceTestNext
 	INX H
 	JMP TP_ChoiceLoop
 
@@ -138,8 +141,10 @@ TP_SkipNest:
 	INX H
 	MOV A,M
 	CPI ']'
-	JNZ TP_SkipNest
-	JMP TP_ChoiceTestNext
+	RZ
+	CPI '['
+	CZ TP_SkipNest
+	JMP TP_SkipNest
 	
 TP_NotChoice:
 	CPI '|'
@@ -152,7 +157,7 @@ TP_NotChoice:
 	INX H
 	RZ
 	
-	; otherwise no match, syntax error
+	; otherwise no match
 TP_SyntaxError:
 	RET
 
@@ -164,9 +169,18 @@ TP_IsDigit:
 	RNC
 	CPI '9'+1
 	RET
+
+; returns carry set if alpha, clear otherwise
+TP_IsAlpha
+	MOV A,E
+	CPI 'A'
+  CMC
+	RNC
+	CPI 'Z'+1
+	RET
 	
 TP_MatchZero:
-: if we have a digit then accumulate the value
+; if we have a digit then accumulate the value
 	CALL TP_IsDigit
 	JNC TP_ChoiceLoop
 	
@@ -208,6 +222,11 @@ TP_MatchDot:
 	DCX H
 	RET
 
+TP_MatchAlpha:
+	CALL TP_IsAlpha
+	JNC TP_ChoiceLoop
+	RET
+
 
 	
 org 200h
@@ -226,14 +245,16 @@ TL_IntEnd:
 	DB 34
 	DB "["
 	DB 34,"|.]"
-	DB "PRINT|"
-	DB "LET|"
-	DB "GO[TO|SUB]"
-	DB "R[ETURN|UN]"
-	DB "I[NPUT|F]"
-	DB "END|"
-	DB "LIST|"
-	DB "NEW|"
+	DB "P[RINT|]"
+	DB "L[ET|]"
+	DB "G[O[TO|SUB]|]"
+	DB "R[ETURN|UN|]"
+	DB "I[NPUT|F|]"
+	DB "E[ND|]"
+	DB "L[IST|]"
+	DB "N[EW|]"
+; a means any alphabetic char
+	DB "a|"
 	DB ",|"
 	DB "(|)|"
 	DB "<[=|>|]"
