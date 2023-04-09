@@ -466,39 +466,35 @@ LookupToken: ; Depth = 2
 	
 	LXI H,TokenList-1
 LookupTokenNext:
+	
 	INX H
 	PUSH D
 	CALL Strcmp
 	POP D
-	CPI 080h
 	RZ
 	
 LookupTokenFindNext:
 	MOV A,M
-	CPI 0
-	JZ Error
+	ORA A
 	INX H
-	ANI 128	; TODO can save a few (3?) bytes by
-					; combining with zero test above
-					; somehow, and the fal through
-					; would be the error condition
-					; and could be called using RST
-	JZ LookupTokenFindNext
+	JP LookupTokenFindNext
+	INR A
+  JNZ LookupTokenNext
+	RST 4
 
-	JMP LookupTokenNext
-
-; DE points to hi-bit terminated string
+;  points to hi-bit terminated string
 ; HL points to hi-bit terminated string
-; Returns 128 in A on match
+; Returns Z set if match
 ; Can't have 128 as a character in D
 ; (so assume that strings must be ASCII)
 Strcmp: ; Depth = 3
 	LDAX D
 	CMP M
-	RNZ
+	RNZ	; On return Z will be clear
 	
+	CMA
 	ANI 128
-	RNZ
+	RZ	; On return Z will be set 
 	
 	INX D
 	INX H
@@ -512,7 +508,7 @@ Strcmp: ; Depth = 3
 StrCpy:
 	DCR A
 	RM		; DCR doesn't affect carry, but does 
-				; affect sign bit, so 
+				; affect sign bit, so use RM
 	
 	PUSH PSW
 	LDAX D
@@ -958,7 +954,7 @@ TokenList:
 	DB MulSub&0ffh
 	DB '/'+128
 	DB DivSub&0ffh
-	DB 0	; zero can only occur at the end
+	DB 255	; 255 can only occur at the end
 	
 PrintSub:
 	LDAX B
@@ -1006,7 +1002,8 @@ AssignToVar:
 GotoSub:
 	CALL ExpEvaluate
 	CALL GetLineNum
-	JNZ Error
+	RZ
+	RST 4
 	
 GosubSub: ; Depth = 1
 	CALL ExpEvaluate
@@ -1014,7 +1011,8 @@ GosubSub: ; Depth = 1
 	PUSH B
 	PUSH H
 	CALL GetLineNum
-	JNZ Error
+	RZ
+	RST 4
 	
 ReturnSub:
 	;TODO - how to always detect
@@ -1112,14 +1110,16 @@ NotEqualSub:
 	INX D
 	RET
 
-SubSub:
-	CALL NegateDE
 AddSub:
 	;Add DE to HL and keep in DE
 	DAD D
 	XCHG
 	
 	RET
+	
+SubSub:
+	CALL NegateDE
+	JMP AddSub
 
 MulSub:
 	PUSH B
