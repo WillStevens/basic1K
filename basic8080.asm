@@ -35,6 +35,9 @@
 ;		 simplified a few operators
 ;		 working on memory rotate function needed
 ;		 for line deletion and insertion
+; 2023-04-09 About 970 bytes long. 
+;		 more code size reductions
+;		 first draft of memory rotate function added
 
 ; Memory map:
 ; system vars
@@ -106,7 +109,7 @@ ORG 00h
 	
 ; Space for 5 byte subroutine
 
-
+RST_PutChar equ 1
 ORG 08h
 
 ; PutChar is called frequently
@@ -121,7 +124,7 @@ PutChar:
 
 ; Space for 5 byte subroutine(s)
 
-
+RST_GetChar equ 2
 ORG 10h
 
 ; GetChar can be called with RST 2
@@ -131,7 +134,8 @@ GetChar:
 	JZ GetChar
 	IN 0
 	RET
-	
+
+RST_CompareHLDE equ 3
 ORG 18h
 
 CompareHLDE:
@@ -146,6 +150,7 @@ CompareHLDE:
 	
 ; 2 bytes free
 
+RST_Error equ 4
 ORG 20h
 
 ;Display error code and go back to line entry
@@ -153,16 +158,16 @@ ORG 20h
 ; usually called with condition test
 Error:
 	MVI A,10
-	RST 1
+	RST RST_PutChar
 	MVI A,'E'
-	RST 1
+	RST RST_PutChat
 	POP PSW		; discard return address and
 						; get error code
 	ANI 0fh
 	ADI 'A'
-	RST 1
+	RST RST_PutChar
 	MVI A,10
-	RST 1
+	RST RST_PutChar
 	
 Ready:
 	; Set stack pointer to just below input buffer
@@ -223,41 +228,81 @@ DeleteProgramLine:
 	; PROG_PTR = last
 	; BC = middle
 	
+	LHLD PROG_PTR
+	XCHG
+	
+	; (SP) = first
+	; DE = last
+	; BC = middle
+	
+	JMP MemoryRotate
+
+; MemoryRotate is the entry point for the memory rotate algorithm
+;(SP+2) = return address
+;(SP) = first
+;DE = last
+;BC = middle
+;HL is used as the next pointer
+
+;DE is preserved, no other registers are
+
+MR_CompareBC_atSP:
+	XTHL
+	MOV A,L
+	CMP C
+	MOV A,H
+	XTHL
+	RNZ
+	CMP B
+	JNZ MR_Loop
+
+MR_SetMiddleNext:
+	; middle = next
+	MOV B,H
+	MOV C,L
+
+MR_SetNextMiddle:
+MemoryRotate:
 	; next = middle
 	MOV H,B
 	MOV L,C
+
+MR_Loop:
+	;while (first != next)
+	;Compare (SP) with HL and return if equal
+	XCHG
+	XTHL
+	RST RST_CompareHLDE
+	XTHL
+	XCHG
 	
-DPL_Loop:
-	; while (first!=next)
-	
-	; swap (*first++,*next++);
-	MOV D,M
+	JZ Ready
+
+	;swap (*first++,*next++)
+	MOV E,M
 	XTHL
 	MOV A,M
-	MOV M,D
+	MOV M,E
+	INX H
 	XTHL
 	MOV M,A
+	INX H
 
-	XCHG
-	LHLD PROG_PTR
-	MOV A,L
-	SUB E
-	
-    
-;  if (next==last) next=middle;
-; else if (first==middle) middle=next;
-; }
-	
-	JMP Ready
+	; if (next==last) next=middle
 
-MemoryShift:
+	RST RST_CompareHLDE
+	JZ MR_SetNextMiddle
+
+	; else if (first == middle) middle = next
+
+	JMP MR_CompareBC_atSP
 
 GetLine:
 	INX H
 	MOV A,L
 	CPI INPUT_BUFFER_END&0ffh
 	CZ Error	; input buffer overflow
-	RST 2
+	RST RST_GetChar
 	
 	MOV M,A
 	
@@ -347,6 +392,7 @@ DiffClass:
 NotVar:
 	PUSH H
 	
+	LXI H,TokenList
 	CALL LookupToken
 	
 	; HL points to the last char of the token we've found
@@ -459,30 +505,27 @@ String:
 	
 	JMP NextToken
 	
-
-; DE points to start of token
-; HL points 1 char after
-LookupToken: ; Depth = 2
-	
-	LXI H,TokenList-1
 LookupTokenNext:
-	
 	INX H
+	
 	PUSH D
-	CALL Strcmp
+	CM StrcmpEntry
 	POP D
 	RZ
 	
-LookupTokenFindNext:
+; DE points to start of token
+; HL points 1 char after
+LookupToken:
 	MOV A,M
 	ORA A
-	INX H
-	JP LookupTokenFindNext
-	INR A
-  JNZ LookupTokenNext
-	RST 4
 
-;  points to hi-bit terminated string
+  JNZ LookupTokenNext
+	RST RST_Error
+
+StrcmpEntry:
+	INX H
+	
+; DE points to hi-bit terminated string
 ; HL points to hi-bit terminated string
 ; Returns Z set if match
 ; Can't have 128 as a character in D
@@ -580,7 +623,7 @@ OutputString:
 	
 	PUSH PSW
 	LDAX B
-	RST 1
+	RST RST_PutChar
 	POP PSW
 	
 	INX B
@@ -904,6 +947,9 @@ NegateDE:
 ORG 02d0h
 
 TokenList:
+	; First 2 bytes make sure that P is the first
+	; char compared
+	DB 128,1
 	DB "PRIN",'T'+128
 	DB PrintSub&0ffh
 	DB "LE",'T'+128
@@ -954,7 +1000,7 @@ TokenList:
 	DB MulSub&0ffh
 	DB '/'+128
 	DB DivSub&0ffh
-	DB 255	; 255 can only occur at the end
+	DB 0	; 0 can only occur at the end
 	
 PrintSub:
 	LDAX B
@@ -972,7 +1018,7 @@ PrintSubEndTest:
 	JZ PrintSub
 	DCX B
 	MVI A,10
-	RST 1
+	RST RST_PutChar
 	RET
 
 LetSub:
@@ -1003,7 +1049,7 @@ GotoSub:
 	CALL ExpEvaluate
 	CALL GetLineNum
 	RZ
-	RST 4
+	RST RST_Error
 	
 GosubSub: ; Depth = 1
 	CALL ExpEvaluate
@@ -1012,7 +1058,7 @@ GosubSub: ; Depth = 1
 	PUSH H
 	CALL GetLineNum
 	RZ
-	RST 4
+	RST RST_Error
 	
 ReturnSub:
 	;TODO - how to always detect
@@ -1096,7 +1142,7 @@ GTESub_1:
 	JMP EqualSub_1
 	
 EqualSub:
-	RST 3 ; returns Z iff HL=DE
+	RST RST_CompareHLDE ; returns Z iff HL=DE
 EqualSub_1:
 	LXI D,1
 	RZ
@@ -1104,7 +1150,7 @@ EqualSub_1:
 	RET
 	
 NotEqualSub:
-	RST 3 ; returns Z iff HL=DE
+	RST RST_CompareHLDE; returns Z iff HL=DE
 	LXI D,0
 	RZ
 	INX D
