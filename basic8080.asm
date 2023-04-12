@@ -38,7 +38,11 @@
 ; 2023-04-09 About 970 bytes long. 
 ;		 more code size reductions
 ;		 first draft of memory rotate function added
-
+; 2023-04-12 About 995 bytes long
+;		 line deletion function more complete
+;		 looking for better way of decreasing 
+;		 PROG_PTR after line deletion
+;
 ; Memory map:
 ; system vars
 ; var space : 52 bytes
@@ -109,7 +113,9 @@ ORG 00h
 	
 ; Space for 5 byte subroutine
 
-RST_PutChar equ 1
+.macro RST_PutChar
+RST 1
+.endm
 ORG 08h
 
 ; PutChar is called frequently
@@ -124,7 +130,9 @@ PutChar:
 
 ; Space for 5 byte subroutine(s)
 
-RST_GetChar equ 2
+.macro RST_GetChar
+RST 2
+.endm
 ORG 10h
 
 ; GetChar can be called with RST 2
@@ -135,7 +143,9 @@ GetChar:
 	IN 0
 	RET
 
-RST_CompareHLDE equ 3
+.macro RST_CompareHLDE
+RST 3
+.endm
 ORG 18h
 
 CompareHLDE:
@@ -150,7 +160,9 @@ CompareHLDE:
 	
 ; 2 bytes free
 
-RST_Error equ 4
+.macro RST_Error
+RST 4
+.endm
 ORG 20h
 
 ;Display error code and go back to line entry
@@ -158,18 +170,21 @@ ORG 20h
 ; usually called with condition test
 Error:
 	MVI A,10
-	RST RST_PutChar
+	RST_PutChar
 	MVI A,'E'
-	RST RST_PutChat
+	RST_PutChar
 	POP PSW		; discard return address and
 						; get error code
 	ANI 0fh
 	ADI 'A'
-	RST RST_PutChar
+	RST_PutChar
 	MVI A,10
-	RST RST_PutChar
+	RST_PutChar
 	
 Ready:
+	LHLD PROG_PTR
+	SHLD PROG_PARSE_PTR
+
 	; Set stack pointer to just below input buffer
 	; Do this every time to guard against
 	; GOSUB with no RETURN errors
@@ -218,19 +233,52 @@ DeleteProgramLine:
 	INX H
 	MOV D,M
 	
+	DCX H
+	DCX H
+	
 	CALL GetLineNum
 	JNZ Ready		; if line not found, do nothing
-	
+
 	PUSH B
+	
 	CALL AdvanceToNextLineNum
 	
-	; (SP) = first
-	; PROG_PTR = last
-	; BC = middle
+	; GetLineNum goes to tbe program statement after line number, so go back to line num
+	POP D
+	DCX D
+	DCX D
+	DCX D
+	PUSH D
 	
-	LHLD PROG_PTR
-	XCHG
+	; Both DE and (SP) contain 'first' ptr
+	; HL contains PROG_PTR
 	
+	; B-(SP) is the amount we need to set PROG_PTR back by...
+	XTHL	; HL = first, (SP)=PROG_PTR
+	XCHG	; DE = first, HL = first
+	CALL NegateDE
+	XCHG	; DE = first, HL=-first
+	DAD B	; HL = middle-first
+	
+	; Now HL contains the amount to decrease PROG_PTR by and (SP) contains PROG_PTR
+	; we want to put PROG_PTR into DE and 
+	; PTOG_PTR-HL into PROG_PTR
+	
+	XCHG	; DE=middle-first, HL=first
+	CALL NegateDE ; DE=first-middle
+	XTHL	; HL=PROG_PTR, (SP)=first
+	XCHG	; DE=PROG_PTR, HL=first-middle
+	DAD D 
+	
+	; Now DE contains PROG_PTR and HL contains
+	; what we want to put into PROG_PTR
+	
+	SHLD PROG_PTR
+	
+	; Z flag has not been affected since 
+	; call to AdvanceToNextLineNum
+	JNZ Ready
+
 	; (SP) = first
 	; DE = last
 	; BC = middle
@@ -238,7 +286,6 @@ DeleteProgramLine:
 	JMP MemoryRotate
 
 ; MemoryRotate is the entry point for the memory rotate algorithm
-;(SP+2) = return address
 ;(SP) = first
 ;DE = last
 ;BC = middle
@@ -252,7 +299,7 @@ MR_CompareBC_atSP:
 	CMP C
 	MOV A,H
 	XTHL
-	RNZ
+	JNZ MR_Loop
 	CMP B
 	JNZ MR_Loop
 
@@ -272,13 +319,14 @@ MR_Loop:
 	;Compare (SP) with HL and return if equal
 	XCHG
 	XTHL
-	RST RST_CompareHLDE
+	RST_CompareHLDE
 	XTHL
 	XCHG
 	
 	JZ Ready
 
 	;swap (*first++,*next++)
+	PUSH D
 	MOV E,M
 	XTHL
 	MOV A,M
@@ -287,10 +335,11 @@ MR_Loop:
 	XTHL
 	MOV M,A
 	INX H
+	POP D
 
 	; if (next==last) next=middle
 
-	RST RST_CompareHLDE
+	RST_CompareHLDE
 	JZ MR_SetNextMiddle
 
 	; else if (first == middle) middle = next
@@ -302,7 +351,7 @@ GetLine:
 	MOV A,L
 	CPI INPUT_BUFFER_END&0ffh
 	CZ Error	; input buffer overflow
-	RST RST_GetChar
+	RST_GetChar
 	
 	MOV M,A
 	
@@ -520,7 +569,7 @@ LookupToken:
 	ORA A
 
   JNZ LookupTokenNext
-	RST RST_Error
+	RST_Error
 
 StrcmpEntry:
 	INX H
@@ -623,7 +672,7 @@ OutputString:
 	
 	PUSH PSW
 	LDAX B
-	RST RST_PutChar
+	RST_PutChar
 	POP PSW
 	
 	INX B
@@ -661,7 +710,7 @@ AdvanceToNextLineNum:
 ; BC is a pointer to somewhere in the program
 ; move onto the next line number
 ; return with Z set if successful
-; Z clear jf fell off end of program
+; Z clear if fell off end of program
 
 	LDAX B
 	
@@ -944,7 +993,7 @@ NegateDE:
 	RET
 	
 ; TokenList must be on same page and index to subroutine address must not overlap with other token values
-ORG 02d0h
+ORG 02d8h
 
 TokenList:
 	; First 2 bytes make sure that P is the first
@@ -1018,7 +1067,7 @@ PrintSubEndTest:
 	JZ PrintSub
 	DCX B
 	MVI A,10
-	RST RST_PutChar
+	RST_PutChar
 	RET
 
 LetSub:
@@ -1049,7 +1098,7 @@ GotoSub:
 	CALL ExpEvaluate
 	CALL GetLineNum
 	RZ
-	RST RST_Error
+	RST_Error
 	
 GosubSub: ; Depth = 1
 	CALL ExpEvaluate
@@ -1058,7 +1107,7 @@ GosubSub: ; Depth = 1
 	PUSH H
 	CALL GetLineNum
 	RZ
-	RST RST_Error
+	RST_Error
 	
 ReturnSub:
 	;TODO - how to always detect
@@ -1142,7 +1191,7 @@ GTESub_1:
 	JMP EqualSub_1
 	
 EqualSub:
-	RST RST_CompareHLDE ; returns Z iff HL=DE
+	RST_CompareHLDE ; returns Z iff HL=DE
 EqualSub_1:
 	LXI D,1
 	RZ
@@ -1150,7 +1199,7 @@ EqualSub_1:
 	RET
 	
 NotEqualSub:
-	RST RST_CompareHLDE; returns Z iff HL=DE
+	RST_CompareHLDE; returns Z iff HL=DE
 	LXI D,0
 	RZ
 	INX D
