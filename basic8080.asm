@@ -42,6 +42,9 @@
 ;		 line deletion function more complete
 ;		 looking for better way of decreasing 
 ;		 PROG_PTR after line deletion
+; 2023-04-16 About 986 bytes long
+;    line deletion apparently working
+;    some code size reductions
 ;
 ; Memory map:
 ; system vars
@@ -151,6 +154,7 @@ ORG 18h
 CompareHLDE:
 ; compare HL and DE, return
 ; Z if equal, NZ if not equal
+; A will be zero if Z is set
 	MOV A,L
 	SUB E
 	RNZ
@@ -160,10 +164,25 @@ CompareHLDE:
 	
 ; 2 bytes free
 
-.macro RST_Error
+.macro RST_BC_GTE_PROG_PTR
 RST 4
 .endm
 ORG 20h
+; call this with C set to perform GTE
+; with C clear to perform GT
+BC_GTE_PROG_PTR:
+	LHLD PROG_PTR
+BC_GTE_HL:
+	MOV A,L
+	SBB C
+	MOV A,H
+	SBB B
+	RET
+
+.macro RST_Error
+RST 5
+.endm
+ORG 28h
 
 ;Display error code and go back to line entry
 ;TODO waste to have this as RST because its
@@ -225,8 +244,6 @@ Ready:
 
 DeleteProgramLine:
 	; TODO still working on this
-	; set PROG_PARSE_PTR back to PROG_PTR
-	SHLD PROG_PARSE_PTR
 	
 	INX H
 	MOV E,M
@@ -243,7 +260,7 @@ DeleteProgramLine:
 	
 	CALL AdvanceToNextLineNum
 	
-	; GetLineNum goes to tbe program statement after line number, so go back to line num
+	; GetLineNum goes to the program statement after line number, so go back to line num
 	POP D
 	DCX D
 	DCX D
@@ -252,10 +269,11 @@ DeleteProgramLine:
 	
 	; Both DE and (SP) contain 'first' ptr
 	; HL contains PROG_PTR
+	; HL was set to PROG_PTR at call, and also
+	; may bave been set in AdvanceToNextLineNum
 	
 	; B-(SP) is the amount we need to set PROG_PTR back by...
-	XTHL	; HL = first, (SP)=PROG_PTR
-	XCHG	; DE = first, HL = first
+	XTHL	; DE=first, HL = first, (SP)=PROG_PTR
 	CALL NegateDE
 	XCHG	; DE = first, HL=-first
 	DAD B	; HL = middle-first
@@ -274,11 +292,13 @@ DeleteProgramLine:
 	; what we want to put into PROG_PTR
 	
 	SHLD PROG_PTR
-	
-	; Z flag has not been affected since 
-	; call to AdvanceToNextLineNum
-	JNZ Ready
 
+	; Z will still be as returned from
+	; AdvanceToNextLineNum
+	; if Z was clear it means that line to delete
+	; is last line, so no need to do MemoryRotate
+	JNZ Ready
+	
 	; (SP) = first
 	; DE = last
 	; BC = middle
@@ -295,13 +315,12 @@ DeleteProgramLine:
 
 MR_CompareBC_atSP:
 	XTHL
-	MOV A,L
-	CMP C
-	MOV A,H
+	XRA A ; clear carry flag to make it GT operation
+	CALL BC_GTE_HL
+	; now carry is set if middle > first
+	; and will be clear when middle = first
 	XTHL
-	JNZ MR_Loop
-	CMP B
-	JNZ MR_Loop
+	JC MR_Loop
 
 MR_SetMiddleNext:
 	; middle = next
@@ -326,16 +345,17 @@ MR_Loop:
 	JZ Ready
 
 	;swap (*first++,*next++)
+	MOV A,M
+	XTHL
 	PUSH D
 	MOV E,M
-	XTHL
-	MOV A,M
-	MOV M,E
+	MOV M,A
+	MOV A,E
+	POP D
 	INX H
 	XTHL
 	MOV M,A
 	INX H
-	POP D
 
 	; if (next==last) next=middle
 
@@ -693,12 +713,11 @@ GetLineNumLoop:
 	; (after advancing BC to next token)
 	LDAX B
 	SUB E
-	MOV L,A
 	INX B
 	LDAX B
 	INX B		; advance
+	JNZ GetLineNumNext
 	SUB D
-	ORA L
 	RZ
 	
 GetLineNumNext:
@@ -738,18 +757,14 @@ ATNLN_Int:
 ATNLN_NotInt:
 	INX B
 	
-	LHLD PROG_PTR
-	MOV A,L
-	SUB C
-	MOV L,A
-	MOV A,H
-	SUB B
-	ORA L
-	JNZ AdvanceToNextLineNum
+	; subtract BC+1 from PROG_PTR
+	; carry will be set if BC >= PROG_PT
+	STC
+	RST_BC_GTE_PROG_PTR
+	JNC AdvanceToNextLineNum 
 	
 	; Error, fell off end of program
-	;!Return with Z flag clear
-	INR A
+	; Z flag will be clear at this point
 	RET
 
 ExecuteProgram: ; Depth = 0
@@ -758,14 +773,10 @@ ExecuteProgram: ; Depth = 0
 	LXI B,PROG_BASE+3
 
 ExecuteProgramLoop:
-	; Check that we haven't reached end of program
-	LHLD PROG_PTR
-	MOV A,L
-	CMP C
-	JNZ ExecuteProgramNotEnd
-	MOV A,H
-	CMP B
-	JZ Ready
+	; Check that we haven't reached or passed end of program
+	STC
+	RST_BC_GTE_PROG_PTR
+	JC Ready ; if there is a carry then BC >= PROG_PTR
 	
 	; TODO need to check that we haven't ended with a GOSUB without return condition
 	; stack should be empty
@@ -966,6 +977,9 @@ SkipExpApplyOp:
 	CPI RightBraceToken&0ffh ; operators or right bracket
 	; Is it the end of the expression?
 	RC
+	
+	; TODO 5 bytes could be saved by sharing this
+	; with ExpNegate
 	
 	; Push onto the operator stack
 	MOV M,A
@@ -1188,7 +1202,10 @@ GTESub_1:
 	; If hi bit of D is clear return 1, else 0
 	MVI A,80h
 	ANA D
-	JMP EqualSub_1
+	
+	DB 3eh ; MVI A opcode to swallow next byte
+	       ; saves 2 bytes compared with
+	       ; JMP EqualSub_1
 	
 EqualSub:
 	RST_CompareHLDE ; returns Z iff HL=DE
