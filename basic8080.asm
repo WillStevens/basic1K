@@ -45,6 +45,8 @@
 ; 2023-04-16 About 986 bytes long
 ;    line deletion apparently working
 ;    some code size reductions
+; 2023-04-16 About 963 bytes long
+;			further code size reductions
 ;
 ; Memory map:
 ; system vars
@@ -114,7 +116,14 @@ PROG_BASE:
 ORG 00h
 	JMP Ready
 	
-; Space for 5 byte subroutine
+; CompOp is a 5 byte subroutine that fits in 
+; this gap
+CompOp:
+; on entry A will be < (60), = (61), > (62)
+; on exit it will be < with high bit set
+	ANI 3ch
+	ORI 80h
+	RET
 
 .macro RST_PutChar
 RST 1
@@ -179,10 +188,167 @@ BC_GTE_HL:
 	SBB B
 	RET
 
-.macro RST_Error
+.macro RST_NegateDE
 RST 5
 .endm
 ORG 28h
+NegateDE:
+	;flags are not affected
+	MOV A,E
+	CMA
+	MOV E,A
+	MOV A,D
+	CMA
+	MOV D,A
+	INX D
+	RET
+	
+.macro RST_ExpEvaluate
+RST 8
+.endm
+ORG 40h
+
+; BC points to program
+; DE contains value
+; operator stack pointer stored in mem
+; in OPERATOR_STACK_PTR
+; Operand stack - SP
+
+ExpEvaluate:
+	LXI H,OPERATOR_STACK_BASE
+
+ExpEvaluateNum:
+	; Expecting ( var integer
+	LDAX B
+	CPI LeftBraceSub&0ffh
+	JZ ExpLeftBrace
+	CPI IntegerToken
+	JZ ExpInteger
+	CPI SubSub&0xff
+	JZ ExpNegate
+	CPI 26
+	CNC Error
+	
+	; Fall through to ExpVar
+ExpVar:
+	; Get var value into DE
+	PUSH H
+	
+	MVI H,VAR_SPACE/256
+	ADD A
+	MOV L,A
+	
+	MOV E,M
+	INX H
+	MOV D,M
+	
+	INX B
+	
+	POP H
+	JMP ExpEvaluateOp
+
+ExpInteger:
+	INX B
+	LDAX B
+	MOV E,A
+	INX B
+	LDAX B
+	MOV D,A
+	INX B
+	
+	JMP ExpEvaluateOp
+
+ExpEvaluateOpRestore:
+	LHLD OPERATOR_STACK_PTR
+	
+ExpEvaluateOp:
+	;Expecting operator or right bracket or
+	;end of expression
+	
+	;Are there operators on the stack?
+	MOV A,L
+	DCX H	; decrement now in anticipation of
+				; needing to look at the top
+				; in a moment
+	CPI OPERATOR_STACK_BASE&0ffh
+	JZ SkipExpApplyOp
+	
+	LDAX B
+	
+	CPI (RightBraceToken&0ffh)+1 ; operators or right bracket
+	; Is it the end of the expression or a right bracket
+	JC ExpApplyOp
+	
+	; or does operator on stack have GTE precedence?
+	DCR A
+	CMP M
+	
+	JNC SkipExpApplyOp ; no, dont apply op
+
+ExpApplyOp:
+	; POP operator from stack
+	; this also handles the case when a
+	; left brace is encountered
+	
+	MOV A,M
+	; Store operator stack pointer, it
+	; will be restored on return from operator
+	SHLD OPERATOR_STACK_PTR
+	
+	; Put the address that we want to return to
+	; into HL. 
+	LXI H,ExpEvaluateOpRestore
+	XTHL	; exhange with operand
+	PUSH H	; put operand back onto stack
+	
+	; Address that we want to call into HL
+	MVI H,PrintSub/256
+	MOV L,A
+	
+	; Exchange with operand
+	XTHL
+	
+	; use RET to call it
+ 	RET
+	
+SkipExpApplyOp:
+	INX H	; undo the DCX that was done prior to jump
+	
+	LDAX B
+	
+	CPI RightBraceToken&0ffh ; operators or right bracket
+	; Is it the end of the expression?
+	RC
+	
+	; The sequence below was shared with ExpNegate
+	; so use a CPI to mop up the initial
+	; LXI in ExpNegate, saving 6 bytes
+	
+	; Push onto the operator stack
+	;MOV M,A
+	;INX H
+	; move onto next token
+	;INX B
+	;because we are
+	;expecting another value, push DE onto stack
+	;PUSH D
+	;JMP ExpEvaluateNum
+	
+	DB 0feh ; OpCode for CPI to mop up LXI
+ExpNegate:
+	; Put 0 onto stack and - onto
+	; operator stack
+	LXI D,0
+	PUSH D
+	
+ExpLeftBrace:
+	; push it onto operator stack
+	MOV M,A
+	INX H
+	
+	INX B
+	JMP ExpEvaluateNum
+
 
 ;Display error code and go back to line entry
 ;TODO waste to have this as RST because its
@@ -243,8 +409,6 @@ Ready:
 	JMP Ready
 
 DeleteProgramLine:
-	; TODO still working on this
-	
 	INX H
 	MOV E,M
 	INX H
@@ -274,7 +438,7 @@ DeleteProgramLine:
 	
 	; B-(SP) is the amount we need to set PROG_PTR back by...
 	XTHL	; DE=first, HL = first, (SP)=PROG_PTR
-	CALL NegateDE
+	RST_NegateDE
 	XCHG	; DE = first, HL=-first
 	DAD B	; HL = middle-first
 	
@@ -283,7 +447,7 @@ DeleteProgramLine:
 	; PTOG_PTR-HL into PROG_PTR
 	
 	XCHG	; DE=middle-first, HL=first
-	CALL NegateDE ; DE=first-middle
+	RST_NegateDE ; DE=first-middle
 	XTHL	; HL=PROG_PTR, (SP)=first
 	XCHG	; DE=PROG_PTR, HL=first-middle
 	DAD D 
@@ -513,6 +677,7 @@ ParseIntegerNext:
 
 	LDAX D
 	INX D
+	
 	SUI '0'
 	
 	MVI B,0
@@ -557,7 +722,7 @@ String:
 	MOV A,L
 	SUB E
 	DCR A
-	;A contains the length
+	;A contains the length, Z set if zero length
 	
 	PUSH H
 	
@@ -567,7 +732,7 @@ String:
 	INX H
 	MOV M,A
 	INX H
-	CALL StrCpy
+	CNZ StrCpy ; only call if not zero length
 	SHLD PROG_PARSE_PTR
 	
 	POP H
@@ -589,7 +754,7 @@ LookupToken:
 	ORA A
 
   JNZ LookupTokenNext
-	RST_Error
+	CALL Error
 
 StrcmpEntry:
 	INX H
@@ -614,23 +779,20 @@ Strcmp: ; Depth = 3
 
 ; DE points to start
 ; HL points to dest
-; A is length (max 127 bytes)
+; Use hi-bit to detect end
+; StrCpy doesn't get called for zero length
 
 ; Leaves HL pointing to char after string
 StrCpy:
-	DCR A
-	RM		; DCR doesn't affect carry, but does 
-				; affect sign bit, so use RM
-	
-	PUSH PSW
 	LDAX D
 	MOV M,A
-	POP PSW
 
 	INX D
 	INX H
 	
-	JMP Strcpy
+	ORA A
+	JP Strcpy
+	RET
 	
 
 
@@ -663,42 +825,28 @@ Digit:
 	ANI 60h
 	ADI 90h
 	RET
-	
-CompOp:
-; on entry A will be < (60), = (61), > (62)
-; on exit it will be < with high bit set
-	ANI 3ch
-	ORI 80h
-	RET
 
-; TODO base it on looking for 
-; hi bit at end of string and inline
-; outputstring
-; this could save about 10 bytes
 PrintStringToken:
 	INX B
 	LDAX B
 	INX B
 	
-	CALL OutputString
+	ORA A	; check for zero length string
+	CNZ OutputString
 	JMP PrintSubEndTest
 	
 OutputString:
 ;Pointer in B
-;Length in A
+; use hi bit as end test
 
-	ORA A
-	RZ
-	
-	PUSH PSW
 	LDAX B
 	RST_PutChar
-	POP PSW
 	
 	INX B
 	
-	DCR A
-	JMP OutputString
+	ORA A
+	JP OutputString
+	RET
 	
 GetLineNum:
 	; Line number is in DE, look it up in the program and set BC to the position after it
@@ -851,161 +999,6 @@ PrintIntegerLoop2:
 	CP PutChar
 	JMP PrintIntegerLoop2
 	
-
-; BC points to program
-; DE contains value
-; operator stack pointer stored in mem
-; in OPERATOR_STACK_PTR
-; Operand stack - SP
-
-ExpEvaluate:
-	LXI H,OPERATOR_STACK_BASE
-
-ExpEvaluateNum:
-	; Expecting ( var integer
-	LDAX B
-	CPI LeftBraceSub&0ffh
-	JZ ExpLeftBrace
-	CPI IntegerToken
-	JZ ExpInteger
-	CPI SubSub&0xff
-	JZ ExpNegate
-	CPI 26
-	CNC Error
-	
-	; Fall through to ExpVar
-ExpVar:
-	; Get var value into DE
-	PUSH H
-	
-	MVI H,VAR_SPACE/256
-	ADD A
-	MOV L,A
-	
-	MOV E,M
-	INX H
-	MOV D,M
-	
-	INX B
-	
-	POP H
-	JMP ExpEvaluateOp
-	
-ExpNegate:
-	; Put 0 onto stack and - onto
-	; operator stack
-	LXI D,0
-	PUSH D
-	
-ExpLeftBrace:
-	; push it onto operator stack
-	MOV M,A
-	INX H
-	
-	INX B
-	JMP ExpEvaluateNum
-
-ExpInteger:
-	INX B
-	LDAX B
-	MOV E,A
-	INX B
-	LDAX B
-	MOV D,A
-	INX B
-	
-	JMP ExpEvaluateOp
-
-ExpEvaluateOpRestore:
-	LHLD OPERATOR_STACK_PTR
-	
-ExpEvaluateOp:
-	;Expecting operator or right bracket or
-	;end of expression
-	
-	;Are there operators on the stack?
-	MOV A,L
-	DCX H	; decrement now in anticipation of
-				; needing to look at the top
-				; in a moment
-	CPI OPERATOR_STACK_BASE&0ffh
-	JZ SkipExpApplyOp
-	
-	LDAX B
-	
-	CPI (RightBraceToken&0ffh)+1 ; operators or right bracket
-	; Is it the end of the expression or a right bracket
-	JC ExpApplyOp
-	
-	; or does operator on stack have GTE precedence?
-	DCR A
-	CMP M
-	
-	JNC SkipExpApplyOp ; no, dont apply op
-
-ExpApplyOp:
-	; POP operator from stack
-	; this also handles the case when a
-	; left brace is encountered
-	
-	MOV A,M
-	; Store operator stack pointer, it
-	; will be restored on return from operator
-	SHLD OPERATOR_STACK_PTR
-	
-	; Put the address that we want to return to
-	; into HL. 
-	LXI H,ExpEvaluateOpRestore
-	XTHL	; exhange with operand
-	PUSH H	; put operand back onto stack
-	
-	; Address that we want to call into HL
-	MVI H,PrintSub/256
-	MOV L,A
-	
-	; Exchange with operand
-	XTHL
-	
-	; use RET to call it
- 	RET
-	
-SkipExpApplyOp:
-	INX H	; undo the DCX that was done prior to jump
-	
-	LDAX B
-	
-	CPI RightBraceToken&0ffh ; operators or right bracket
-	; Is it the end of the expression?
-	RC
-	
-	; TODO 5 bytes could be saved by sharing this
-	; with ExpNegate
-	
-	; Push onto the operator stack
-	MOV M,A
-	INX H
-
-	; move onto next token
-	INX B
-	
-	;because we are
-	;expecting another value, push DE onto stack
-	PUSH D
-	
-	JMP ExpEvaluateNum
-
-NegateDE:
-	;flags are not affected
-	MOV A,E
-	CMA
-	MOV E,A
-	MOV A,D
-	CMA
-	MOV D,A
-	INX D
-	
-	RET
-	
 ; TokenList must be on same page and index to subroutine address must not overlap with other token values
 ORG 02d8h
 
@@ -1069,7 +1062,7 @@ PrintSub:
 	LDAX B
 	CPI StringToken
 	JZ PrintStringToken
-	CALL ExpEvaluate
+	RST_ExpEvaluate
 	PUSH B
 	CALL PrintInteger
 	POP B
@@ -1091,7 +1084,7 @@ LetSub:
 	INX B
 	INX B
 	
-	CALL ExpEvaluate
+	RST_ExpEvaluate
 	
 	POP PSW
 	
@@ -1109,19 +1102,19 @@ AssignToVar:
 	RET
 	
 GotoSub:
-	CALL ExpEvaluate
+	RST_ExpEvaluate
 	CALL GetLineNum
 	RZ
-	RST_Error
+	CALL Error
 	
 GosubSub: ; Depth = 1
-	CALL ExpEvaluate
+	RST_ExpEvaluate
 	POP H	; Preserve return address
 	PUSH B
 	PUSH H
 	CALL GetLineNum
 	RZ
-	RST_Error
+	CALL Error
 	
 ReturnSub:
 	;TODO - how to always detect
@@ -1135,7 +1128,7 @@ ReturnSub:
 	PCHL
 
 IfSub:
-	CALL ExpEvaluate
+	RST_ExpEvaluate
 	MOV A,E
 	ORA D
 	RNZ
@@ -1230,7 +1223,7 @@ AddSub:
 	RET
 	
 SubSub:
-	CALL NegateDE
+	RST_NegateDE
 	JMP AddSub
 
 MulSub:
@@ -1294,7 +1287,7 @@ DivLoop:
 	JC DivLoop
 
 ; Assume we want +ve remainder
- 	CALL NegateDE
+ 	RST_NegateDE
  	DAD D
 
 
@@ -1306,6 +1299,7 @@ DivLoop:
 	POP PSW
 	CP NegateDE
 	POP PSW
-	CP NegateDE
+	RM
+	RST_NegateDE
 	
 	RET
