@@ -145,19 +145,6 @@ PutChar:
 
 ; Space for 5 byte subroutine(s)
 
-.macro RST_GetChar
-RST 2
-.endm
-ORG 10h
-
-; GetChar can be called with RST 2
-
-GetChar:
-	IN 1
-	JZ GetChar ; TODO incorrect, IN doesnt affect flags
-	IN 0
-	RET
-
 .macro RST_CompareHLDE
 RST 3
 .endm
@@ -316,6 +303,7 @@ SkipExpApplyOp:
 	INX H	; undo the DCX that was done prior to jump
 	
 	LDAX B
+	INX B
 	
 	CPI RightBraceToken&0ffh ; operators or right bracket
 	; Is it the end of the expression?
@@ -323,7 +311,7 @@ SkipExpApplyOp:
 	
 	; The sequence below was shared with ExpNegate
 	; so use a CPI to mop up the initial
-	; LXI in ExpNegate, saving 6 bytes
+	; LXI in ExpNegate, saving 5 bytes
 	
 	; Push onto the operator stack
 	;MOV M,A
@@ -350,7 +338,11 @@ ExpLeftBrace:
 	JMP ExpEvaluateNum
 	
 GetLine:
-	RST_GetChar
+	IN 1
+	ANI 1
+	JZ GetLine
+	IN 0
+	
 	MOV M,A
 	CPI 10
 	RZ
@@ -871,6 +863,7 @@ ATNLN_Int:
 	ADD C
 	MOV C,A
 	
+	; TODO save a byte with ADC B, SUB C, MOV B,A
 	MVI A,0
 	ADC B
 	MOV B,A
@@ -894,46 +887,6 @@ AdvanceToNextLineNum:
 	; Z flag will be clear at this point
 
 	RET
-
-ExecuteProgram: ; Depth = 0
-	; HL contains PROG_PTR
-	; Put the end program marker there
-	MVI M,EndProgram
-	
-	; Point BC to first line
-	; Skip over the line number
-	LXI B,PROG_BASE+3
-
-ExecuteProgramLoop:
-	; Check that we haven't reached end of program
-	LDAX B
-	CPI EndProgram
-	JZ Ready
-	
-	; Is it a line number?
-	CPI LinenumToken
-	JNZ ExecuteProgramNotLineNum
-	
-	INX B
-	INX B
-	INX B
-	LDAX B
-	
-ExecuteProgramNotLineNum:
-	INX B
-
-	; TODO Check that it is a keyword allowed in a program
-	
-	; Put return address onto stack
-	LXI H,ExecuteProgramLoop
-	PUSH H
-	
-	; Put pointer to call address into HL
-	MOV L,A
-	MVI H,PrintSub/256
-	
-	; Jump to it
-	PCHL
 
 ;Output the value in DE
 PrintInteger:
@@ -1034,6 +987,48 @@ TokenList:
 	DB '/'+128
 	DB DivSub&0ffh
 	DB 0	; 0 can only occur at the end
+
+ExecuteProgram: ; Depth = 0
+	; HL contains PROG_PTR
+	; Put the end program marker there
+	MVI M,EndProgram
+	
+	; Point BC to first line
+	; Skip over the line number
+	LXI B,PROG_BASE+3
+
+ExecuteProgramLoop:
+	; Check that we haven't reached end of program
+	LDAX B
+	CPI EndProgram
+	JZ Ready
+	
+	; Is it a line number?
+	CPI LinenumToken
+	JNZ ExecuteProgramNotLineNum
+	
+	INX B
+	INX B
+	INX B
+	LDAX B
+	
+ExecuteProgramNotLineNum:
+	INX B
+
+	; TODO Check that it is a keyword allowed in a program
+	
+	; Put return address onto stack
+	LXI H,ExecuteProgramLoop
+	PUSH H
+	
+	; Put pointer to call address into HL
+	MOV L,A
+	; ExecuteProgramLoop must be on the same page
+	; page as PrintSub so that we don't have to
+	; update H
+	
+	; Jump to it
+	PCHL
 	
 PrintSub:
 	LDAX B
