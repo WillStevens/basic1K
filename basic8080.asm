@@ -303,11 +303,12 @@ SkipExpApplyOp:
 	INX H	; undo the DCX that was done prior to jump
 	
 	LDAX B
-	INX B
 	
 	CPI RightBraceToken&0ffh ; operators or right bracket
 	; Is it the end of the expression?
 	RC
+	
+	INX B
 	
 	; The sequence below was shared with ExpNegate
 	; so use a CPI to mop up the initial
