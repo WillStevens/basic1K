@@ -47,6 +47,15 @@
 ;    some code size reductions
 ; 2023-04-16 About 963 bytes long
 ;			further code size reductions
+; 2023-04-17 About 930 bytes long
+;			looked for subroutine code sharing and
+;			LXI trick optimisations.
+;			Likely that some bugs will have been
+;			introduced when doing this
+; 2023-04-18 About 900 bytes long
+;			greatly reduced CharClass size
+; 2023-04-20 About 880 bytes long
+;			more code size reduction
 ;
 ; Memory map:
 ; system vars
@@ -72,6 +81,7 @@ LinenumToken equ 27 ; followed by 16-bit integer
 										; to next line (0 = end)
 StringToken equ 26 ; followed by 1 byte length, followed by string characters
 CommaToken equ 29
+EndProgram equ 30
 
 ; Callable tokens are low byte of subroutine to call
 
@@ -116,14 +126,7 @@ PROG_BASE:
 ORG 00h
 	JMP Ready
 	
-; CompOp is a 5 byte subroutine that fits in 
-; this gap
-CompOp:
-; on entry A will be < (60), = (61), > (62)
-; on exit it will be < with high bit set
-	ANI 3ch
-	ORI 80h
-	RET
+; 5 bytes free
 
 .macro RST_PutChar
 RST 1
@@ -151,7 +154,7 @@ ORG 10h
 
 GetChar:
 	IN 1
-	JZ GetChar
+	JZ GetChar ; TODO incorrect, IN doesnt affect flags
 	IN 0
 	RET
 
@@ -162,36 +165,25 @@ ORG 18h
 
 CompareHLDE:
 ; compare HL and DE, return
-; Z if equal, NZ if not equal
+; Z equal, NZ if not equal
+; C equal, NC if not equal
 ; A will be zero if Z is set
 	MOV A,L
-	SUB E
+	XRA E
 	RNZ
 	MOV A,H
-	SUB D
+	XRA D
+	RNZ
+	STC
 	RET
-	
-; 2 bytes free
 
-.macro RST_BC_GTE_PROG_PTR
+;TODO - making this return C or NC would enable
+; savings elsewhere
+
+.macro RST_NegateDE
 RST 4
 .endm
 ORG 20h
-; call this with C set to perform GTE
-; with C clear to perform GT
-BC_GTE_PROG_PTR:
-	LHLD PROG_PTR
-BC_GTE_HL:
-	MOV A,L
-	SBB C
-	MOV A,H
-	SBB B
-	RET
-
-.macro RST_NegateDE
-RST 5
-.endm
-ORG 28h
 NegateDE:
 	;flags are not affected
 	MOV A,E
@@ -203,10 +195,21 @@ NegateDE:
 	INX D
 	RET
 	
-.macro RST_ExpEvaluate
-RST 8
+.macro RST_NewLine
+RST 6
 .endm
-ORG 40h
+ORG 30h
+NewLine:
+	MVI A,10
+	RST_PutChar
+	RET
+
+; 4 bytes free
+
+.macro RST_ExpEvaluate
+RST 7
+.endm
+ORG 38h
 
 ; BC points to program
 ; DE contains value
@@ -218,8 +221,9 @@ ExpEvaluate:
 	LXI H,OPERATOR_STACK_BASE
 
 ExpEvaluateNum:
-	; Expecting ( var integer
+	; Expecting ( var integer or - sign
 	LDAX B
+	INX B
 	CPI LeftBraceSub&0ffh
 	JZ ExpLeftBrace
 	CPI IntegerToken
@@ -242,13 +246,10 @@ ExpVar:
 	INX H
 	MOV D,M
 	
-	INX B
-	
 	POP H
 	JMP ExpEvaluateOp
 
 ExpInteger:
-	INX B
 	LDAX B
 	MOV E,A
 	INX B
@@ -346,16 +347,24 @@ ExpLeftBrace:
 	MOV M,A
 	INX H
 	
-	INX B
 	JMP ExpEvaluateNum
-
+	
+GetLine:
+	RST_GetChar
+	MOV M,A
+	CPI 10
+	RZ
+	
+	INX H
+	MOV A,L
+	CPI INPUT_BUFFER_END&0ffh
+	JNZ GetLine
+	
+	; Fall through to Error
 
 ;Display error code and go back to line entry
-;TODO waste to have this as RST because its
-; usually called with condition test
 Error:
-	MVI A,10
-	RST_PutChar
+	RST_NewLine
 	MVI A,'E'
 	RST_PutChar
 	POP PSW		; discard return address and
@@ -363,8 +372,7 @@ Error:
 	ANI 0fh
 	ADI 'A'
 	RST_PutChar
-	MVI A,10
-	RST_PutChar
+	RST_NewLine
 	
 Ready:
 	LHLD PROG_PTR
@@ -374,16 +382,16 @@ Ready:
 	; Do this every time to guard against
 	; GOSUB with no RETURN errors
 	
-	LXI H,INPUT_BUFFER-1
+	LXI H,INPUT_BUFFER
 	SPHL
-	
 	; H is also the initial pointer to input buffer
+	PUSH H
 
 	CALL Getline
 	
 	; Now we have a line terminated by chr(10)
 	; Get location of input buffer into HL
-	LXI H,INPUT_BUFFER
+	POP H
 
 	CALL NextToken
 	
@@ -468,6 +476,8 @@ DeleteProgramLine:
 	; BC = middle
 	
 	JMP MemoryRotate
+	; TODO could save a bye by setting HL=BC
+	; and falling through?
 
 ; MemoryRotate is the entry point for the memory rotate algorithm
 ;(SP) = first
@@ -479,8 +489,10 @@ DeleteProgramLine:
 
 MR_CompareBC_atSP:
 	XTHL
-	XRA A ; clear carry flag to make it GT operation
-	CALL BC_GTE_HL
+	MOV A,L
+	SUB C
+	MOV A,H
+	SBB B
 	; now carry is set if middle > first
 	; and will be clear when middle = first
 	XTHL
@@ -530,23 +542,7 @@ MR_Loop:
 
 	JMP MR_CompareBC_atSP
 
-GetLine:
-	INX H
-	MOV A,L
-	CPI INPUT_BUFFER_END&0ffh
-	CZ Error	; input buffer overflow
-	RST_GetChar
-	
-	MOV M,A
-	
-	CPI 10
-	JNZ GetLine
-	RET
-
 ExecuteDirect: ; Depth = 0
-	
-	LHLD PROG_PTR
-	SHLD PROG_PARSE_PTR
 	
 	; Otherwise execute the statement
 	; Assume its RUN
@@ -612,12 +608,10 @@ DiffClass:
 	MOV A,B
 	CPI ' '
 	JZ NextToken
-	CPI '0'+128
+	CPI 0c0h
 	JZ Integer
 	CPI '"'
 	JZ String
-	CPI 'P'+128
-	JNZ NotVar
 	LDAX D
 	SUI 'A'+128	; if hi bit is set then length=1
 	JNC Var			; and it must be a var
@@ -633,28 +627,23 @@ NotVar:
 	INX H
 	MOV A,M
 	
-; Store token in program
+	DB 21h ; opcode of LXI H to skip 2 bytes
+	
+Var:
+	; DE points to the single-char varname, so inc to get a pointer to the next char to look at and put on stack to get back after updating PROG_PARSE_PTR
+	
+	INX D
+	PUSH D
+	
+	; Store token in program
 	LHLD PROG_PARSE_PTR
 	MOV M,A
+Var_Share_Entry:
 	INX H
+Var_Share_Entry2:
 	SHLD PROG_PARSE_PTR
 	
 	POP H
-	
-	JMP NextToken
-
-Var:
-	; Token value is var letter-'A'
-	
-	; Store var token in program
-	LHLD PROG_PARSE_PTR
-	MOV M,A
-	INX H
-	SHLD PROG_PARSE_PTR
-	
-	; DE points to the single-char varname, so swap it with HL and then inc to get a pointer to the next char to look at
-	XCHG
-	INX H
 	
 	JMP NextToken
 
@@ -690,16 +679,18 @@ ParseIntegerNext:
 	LXI B,0ff80h
 	DAD B
 	
+	XCHG  ; both places where this is called
+				; have XCHG afterwards
+	
 	RET
 	
 Integer:
 	CALL ParseInteger
 	
-	; At this point HL contains the integer
-	; DE points to tbe char after end of token
+	; At this point DE contains the integer
+	; HL points to tbe char after end of token
 	
-	PUSH D
-	XCHG
+	PUSH H
 	
 	; Store integer in program
 	LHLD PROG_PARSE_PTR
@@ -708,12 +699,8 @@ Integer:
 	MOV M,E	; TODO code in common with var assign
 	INX H
 	MOV M,D
-	INX H
-	SHLD PROG_PARSE_PTR
-	
-	POP H
-	
-	JMP NextToken
+
+	JMP Var_Share_Entry
 
 ; DE points to first double quote
 ; HL-1 is last double quote
@@ -733,11 +720,7 @@ String:
 	MOV M,A
 	INX H
 	CNZ StrCpy ; only call if not zero length
-	SHLD PROG_PARSE_PTR
-	
-	POP H
-	
-	JMP NextToken
+	JMP Var_Share_Entry2
 	
 LookupTokenNext:
 	INX H
@@ -779,22 +762,21 @@ Strcmp: ; Depth = 3
 
 ; DE points to start
 ; HL points to dest
-; Use hi-bit to detect end
+; Use hi-bit to detect end, which will be quote
+; so don't copy it
 ; StrCpy doesn't get called for zero length
 
 ; Leaves HL pointing to char after string
 StrCpy:
 	LDAX D
+	ORA A
+	RM
 	MOV M,A
 
 	INX D
 	INX H
 	
-	ORA A
-	JP Strcpy
-	RET
-	
-
+	JMP Strcpy
 
 ; Return the class of a character for tokenizing
 ; Digit
@@ -802,51 +784,47 @@ StrCpy:
 ; All others are distinct classes
 
 CharClass:
+; each character less than 0 is a 
+; distinct class.
+; 0-9 is a class (class C)
+; : to > is a class (class 8)
+; >= @ is a class (class 9)
 	CPI '0'
 	RC	 			; LT '0' then return
-	CPI 'Z'+1
-	RNC				; GT Z then return
 	CPI '9'+1
-	JC Digit	; LTE 9 and it is a digit	
-	CPI '<'
-	RC				; LT '<' then return
-	CPI '>'+1	; LTE '>' and its comp operator
-	JC CompOp
-	CPI 'A'
-	RC 				; LT 'A' then return
+	RAR
+	STC
+	RAR
+	ANI 0f0h ; top 4 bits give the class
+					 ; hi bit must be set to signify that
+					 ; these are characters that group
+					 ; together
 	
-
-	; Otherwise fall through
-	
-Alpha:
-Digit:
-; on entry A will be 0-9 or A-Z
-; on exit it will be either 0 or P with high bit set
-	ANI 60h
-	ADI 90h
 	RET
 
 PrintStringToken:
 	INX B
 	LDAX B
+	MOV E,A ; Put length into E
 	INX B
 	
-	ORA A	; check for zero length string
-	CNZ OutputString
+	CALL OutputString
 	JMP PrintSubEndTest
 	
 OutputString:
 ;Pointer in B
-; use hi bit as end test
+;Length in E
+  DCR E
+  RM
 
 	LDAX B
+	; TODO putting ANI 07fh here would make this
+	; usable for LIST statement
 	RST_PutChar
 	
 	INX B
 	
-	ORA A
-	JP OutputString
-	RET
+	JMP OutputString
 	
 GetLineNum:
 	; Line number is in DE, look it up in the program and set BC to the position after it
@@ -873,13 +851,8 @@ GetLineNumNext:
 	RNZ
 	JMP GetLineNumLoop
 	
-AdvanceToNextLineNum:
-; BC is a pointer to somewhere in the program
-; move onto the next line number
-; return with Z set if successful
-; Z clear if fell off end of program
 
-	LDAX B
+ATNLN_Loop:
 	
 	SBI LinenumToken
 	RZ
@@ -904,34 +877,38 @@ ATNLN_Int:
 	
 ATNLN_NotInt:
 	INX B
+
+AdvanceToNextLineNum:
+; BC is a pointer to somewhere in the program
+; move onto the next line number
+; return with Z set if successful
+; Z clear if fell off end of program
+
+	LDAX B
+	CPI EndProgram
+	JNZ AdvanceToNextLineNum 
 	
-	; subtract BC+1 from PROG_PTR
-	; carry will be set if BC >= PROG_PT
-	STC
-	RST_BC_GTE_PROG_PTR
-	JNC AdvanceToNextLineNum 
+	; fell off end of program
 	
-	; Error, fell off end of program
+	INR A
 	; Z flag will be clear at this point
+
 	RET
 
 ExecuteProgram: ; Depth = 0
+	; HL contains PROG_PTR
+	; Put the end program marker there
+	MVI M,EndProgram
+	
 	; Point BC to first line
 	; Skip over the line number
 	LXI B,PROG_BASE+3
 
 ExecuteProgramLoop:
-	; Check that we haven't reached or passed end of program
-	STC
-	RST_BC_GTE_PROG_PTR
-	JC Ready ; if there is a carry then BC >= PROG_PTR
-	
-	; TODO need to check that we haven't ended with a GOSUB without return condition
-	; stack should be empty
-	; if not then correct it
-	
-ExecuteProgramNotEnd:
+	; Check that we haven't reached end of program
 	LDAX B
+	CPI EndProgram
+	JZ Ready
 	
 	; Is it a line number?
 	CPI LinenumToken
@@ -1000,7 +977,7 @@ PrintIntegerLoop2:
 	JMP PrintIntegerLoop2
 	
 ; TokenList must be on same page and index to subroutine address must not overlap with other token values
-ORG 02d8h
+ORG 02e0h
 
 TokenList:
 	; First 2 bytes make sure that P is the first
@@ -1073,8 +1050,7 @@ PrintSubEndTest:
 	CPI CommaToken
 	JZ PrintSub
 	DCX B
-	MVI A,10
-	RST_PutChar
+	RST_NewLine
 	RET
 
 LetSub:
@@ -1101,17 +1077,15 @@ AssignToVar:
 	
 	RET
 	
-GotoSub:
-	RST_ExpEvaluate
-	CALL GetLineNum
-	RZ
-	CALL Error
-	
 GosubSub: ; Depth = 1
 	RST_ExpEvaluate
 	POP H	; Preserve return address
 	PUSH B
 	PUSH H
+	
+	DB 03eh ; opcode for MVI A to eat next byte
+GotoSub:
+	RST_ExpEvaluate
 	CALL GetLineNum
 	RZ
 	CALL Error
@@ -1140,18 +1114,18 @@ InputSub:
 	; TODO there is no check for var token
 	; nor for integer input
 	
-	LXI H,INPUT_BUFFER-1
+	LXI H,INPUT_BUFFER
+	PUSH H
 	CALL GetLine
 	DCX H
 	MOV A,M
 	ORI 128
 	MOV M,A
 	
-	LXI D,INPUT_BUFFER
+	POP D
 	
 	PUSH B
 	CALL ParseInteger
-	XCHG
 	POP B
 	
 	LDAX B
@@ -1188,43 +1162,32 @@ LTESub:
 	; Swap operands and fall through
 	XCHG
 GTESub:
-	CALL SubSub
-
-GTESub_1:
-	; SubSub will have been executed prior to this
-	; If hi bit of D is clear return 1, else 0
-	MVI A,80h
-	ANA D
+	RST_NegateDE
+	DAD D
 	
-	DB 3eh ; MVI A opcode to swallow next byte
-	       ; saves 2 bytes compared with
-	       ; JMP EqualSub_1
+	DB 11h ; LXI D opcode to swallow next 2 bytes
 	
 EqualSub:
 	RST_CompareHLDE ; returns Z iff HL=DE
-EqualSub_1:
-	LXI D,1
-	RZ
-	DCX D
-	RET
+	CMC
+	DB 3eh ; MVI A opcode to swallow next byte
 	
 NotEqualSub:
 	RST_CompareHLDE; returns Z iff HL=DE
-	LXI D,0
-	RZ
-	INX D
+	LXI D,1
+	RNC
+	DCX D
 	RET
 
 AddSub:
+	DB 3eh	; opcode for MVI A, to eat next byte
+SubSub:
+	RST_NegateDE
 	;Add DE to HL and keep in DE
 	DAD D
 	XCHG
 	
 	RET
-	
-SubSub:
-	RST_NegateDE
-	JMP AddSub
 
 MulSub:
 	PUSH B
