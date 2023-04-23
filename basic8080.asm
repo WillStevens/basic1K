@@ -56,7 +56,8 @@
 ;			greatly reduced CharClass size
 ; 2023-04-20 About 880 bytes long
 ;			more code size reduction
-;
+; 2023-4-23 About 970 bytes long
+;			first draft of code for LIST added
 ; Memory map:
 ; system vars
 ; var space : 52 bytes
@@ -537,9 +538,13 @@ MR_Loop:
 
 ExecuteDirect: ; Depth = 0
 	
+	CPI ListSub&0ffh
+	
 	; Otherwise execute the statement
 	; Assume its RUN
-	JMP ExecuteProgram
+	JNZ ExecuteProgram
+	
+	CALL ListSub
 	
 	JMP Ready
 	
@@ -615,10 +620,8 @@ NotVar:
 	LXI H,TokenList
 	CALL LookupToken
 	
-	; HL points to the last char of the token we've found
-	; Advance past this then get the token value
-	INX H
-	MOV A,M
+	; C contains the token value
+	MOV A,C
 	
 	DB 21h ; opcode of LXI H to skip 2 bytes
 	
@@ -716,14 +719,17 @@ String:
 	
 LookupTokenNext:
 	INX H
+	MOV C,M	
 	
 	PUSH D
 	CM StrcmpEntry
 	POP D
-	RZ
+
+	RZ 
 	
 ; DE points to start of token
 ; HL points 1 char after
+; C contains the token value
 LookupToken:
 	MOV A,M
 	ORA A
@@ -810,8 +816,6 @@ OutputString:
   RM
 
 	LDAX B
-	; TODO putting ANI 07fh here would make this
-	; usable for LIST statement
 	RST_PutChar
 	
 	INX B
@@ -928,64 +932,139 @@ PrintIntegerLoop2:
 	RZ
 	CP PutChar
 	JMP PrintIntegerLoop2
+
+; List statement main loop
+ListLoop:
+	LDAX B
+	CPI EndProgram
+	RZ
 	
+  LXI H,ListLoop	; so that we can loop using RET
+  PUSH H
+
+  CPI IntegerToken
+  JZ List_Integer
+  CPI LinenumToken
+  JZ List_Integer
+  CPI StringToken
+  JZ List_String
+
+List_Token:
+  ; All other tests failed, so it is from TokenList or a var
+ 
+  ; For each byte in TokenList
+  ;   if hi bit set then MOV D,E : MOV E,index, INX, compare byte
+  ;     if match then output string - need to modify output string to use ANI 07fh
+  ; if not found then it must be a var, so fall through
+  LXI H,TokenList-1
+ 
+List_Token_Loop:
+  INX H
+  MOV A,M
+  ORA A
+  JZ List_Var
+  JP List_Token_Loop
+
+  INX H
+  LDAX B
+  CMP M
+  JNZ List_Token_Loop
+
+List_Token_String_Loop:
+  INX H
+  MOV A,M
+  ANI 07fh
+  RST_PutChar
+  ORA M
+  JP List_Token_String_Loop
+  
+  INX B
+  RET
+ 
+List_Var:
+  LDAX B
+  INX B
+  ADI 'A'
+  RST_PutChar
+  RET
+ 
+List_Integer:
+  INX B
+  LDAX B
+  MOV E,A
+  INX B
+  LDAX B
+  MOV D,A
+  INX B
+ 
+  JMP PrintInteger 
+ 
+List_String: ; Could be combined with OutputString, saving 7 bytes print string somehow...
+  INX B
+  LDAX B
+  MOV E,A
+  INX B
+ 
+  JMP OutputString
+
+
 ; TokenList must be on same page and index to subroutine address must not overlap with other token values
-ORG 02e0h
+ORG 02d8h
 
 TokenList:
 	; First 2 bytes make sure that P is the first
 	; char compared
-	DB 128,1
-	DB "PRIN",'T'+128
+	DB 128
 	DB PrintSub&0ffh
-	DB "LE",'T'+128
+	DB "PRIN",'T'+128
 	DB LetSub&0ffh
-	DB "GOT",'O'+128
+	DB "LE",'T'+128
 	DB GotoSub&0ffh
-	DB "GOSU",'B'+128
+	DB "GOT",'O'+128
 	DB GosubSub&0ffh
-	DB "RETUR",'N'+128
+	DB "GOSU",'B'+128
 	DB ReturnSub&0ffh
-	DB "I",'F'+128
+	DB "RETUR",'N'+128
 	DB IfSub&0ffh
-	DB "INPU",'T'+128
+	DB "I",'F'+128
 	DB InputSub&0ffh
+	DB "INPU",'T'+128
+	DB 1
 	DB "EN",'D'+128
 	DB 1
 ; Before this are keywords allowed at run-time
 	DB "RU",'N'+128
-	DB 1
+	DB  ListSub&0ffh
 	DB "LIS",'T'+128
 	DB 1
 	DB "NE",'W'+128
-	DB  1
-	DB ','+128
 	DB CommaToken
-	DB '('+128
+	DB ','+128
 	DB LeftBraceSub&0ffh
+	DB '('+128
 ;After this label, only expect things which count as operators
+  DB RightBraceToken&0ffh
 	DB ')'+128
-	DB RightBraceToken&0ffh
-	DB '<'+128
 	DB LTSub&0ffh
-	DB '>'+128
+	DB '<'+128
 	DB GTSub&0ffh
-	DB ">",'='+128
+	DB '>'+128
 	DB GTESub&0ffh
-	DB "<",'='+128
+	DB ">",'='+128
 	DB LTESub&0ffh
-	DB '='+128
+	DB "<",'='+128
 	DB EqualSub&0ffh
-	DB "<>"+128
+	DB '='+128
 	DB NotEqualSub&0ffh
-	DB '+'+128
+	DB "<>"+128
 	DB AddSub&0ffh
-	DB '-'+128
+	DB '+'+128
 	DB SubSub&0ffh
-	DB '*'+128
+	DB '-'+128
 	DB MulSub&0ffh
-	DB '/'+128
+	DB '*'+128
 	DB DivSub&0ffh
+	DB '/'+128
 	DB 0	; 0 can only occur at the end
 
 ExecuteProgram: ; Depth = 0
@@ -1128,7 +1207,10 @@ InputSub:
 	
 	JMP AssignToVar
 	
-
+ListSub:
+  LXI B,PROG_BASE
+  JMP ListLoop
+  
 LeftBraceSub:
 	LDAX B
 	; Is current operator a right brace?
