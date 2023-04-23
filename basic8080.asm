@@ -658,22 +658,21 @@ ParseIntegerNext:
 	DAD H
 
 	LDAX D
-	INX D
 	
-	SUI '0'
+	ANI 0fh
 	
 	MVI B,0
 	MOV C,A
 	DAD B
 	
+	LDAX D ; test hi bit
+	ORA A
+	
+	INX D
 	JP ParseIntegerNext
 	
-	; Subtract 128 because fhe last byte had hi bit set
-	LXI B,0ff80h
-	DAD B
-	
-	XCHG  ; both places where this is called
-				; have XCHG afterwards
+	XCHG  ; both places where this is called from
+				; require XCHG
 	
 	RET
 	
@@ -847,7 +846,7 @@ GetLineNumNext:
 
 ATNLN_Loop:
 	
-	SBI LinenumToken
+	SUI LinenumToken
 	RZ
 	
 	INR A
@@ -880,7 +879,7 @@ AdvanceToNextLineNum:
 
 	LDAX B
 	CPI EndProgram
-	JNZ AdvanceToNextLineNum 
+	JNZ ATNLN_Loop
 	
 	; fell off end of program
 	
@@ -1161,7 +1160,10 @@ GTESub:
 	RST_NegateDE
 	DAD D
 	
-	DB 11h ; LXI D opcode to swallow next 2 bytes
+	MOV A,H
+	RAL
+	
+	DB 11h; LXi D opcode to swallow next byte
 	
 EqualSub:
 	RST_CompareHLDE ; returns Z iff HL=DE
