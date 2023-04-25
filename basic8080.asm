@@ -434,11 +434,10 @@ DeleteProgramLine:
 
 	PUSH B
 	
-	CALL AdvanceToNextLineNum
+	CALL ATNLN_NotInt
 	
-	; GetLineNum goes to the program statement after line number, so go back to line num
+	; GetLineNum goes to the second bute of line number, so go back to line num
 	POP D
-	DCX D
 	DCX D
 	DCX D
 	PUSH D
@@ -837,27 +836,29 @@ OutputString_Loop:
 	JMP OutputString_Loop
 	
 GetLineNum:
-	; Line number is in DE, look it up in the program and set BC to the position after it
+	; Line number is in DE, look it up in the program and set BC to the second byte of line num
 	; return with Z set if successful
-	; Z clear if not successful
-	LXI B,PROG_BASE
+	;
+	; Z clear if not successful, and BC points
+	; to the first byte of the line with number
+	; greater than the request
+	
+	LXI B,PROG_BASE-1
 
 GetLineNumLoop:
 	INX B
 	
 	; Test for (BC)=DE, and return if true
-	; (after advancing BC to next token)
 	LDAX B
 	SUB E
 	INX B
-	LDAX B
-	INX B		; advance
 	JNZ GetLineNumNext
+	LDAX B
 	SUB D
 	RZ
 	
 GetLineNumNext:
-	CALL AdvanceToNextLineNum
+	CALL ATNLN_NotInt
 	RNZ
 	JMP GetLineNumLoop
 	
@@ -1163,6 +1164,7 @@ GosubSub: ; Depth = 1
 GotoSub:
 	RST_ExpEvaluate
 	CALL GetLineNum
+	INX B
 	RZ
 	CALL Error
 	
