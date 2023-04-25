@@ -56,8 +56,11 @@
 ;			greatly reduced CharClass size
 ; 2023-04-20 About 880 bytes long
 ;			more code size reduction
-; 2023-4-23 About 970 bytes long
+; 2023-04-23 About 970 bytes long
 ;			first draft of code for LIST added
+; 2023-04-25 About 970 bytes long
+;			LIST command working
+;
 ; Memory map:
 ; system vars
 ; var space : 52 bytes
@@ -145,6 +148,18 @@ PutChar:
 	RET
 
 ; Space for 5 byte subroutine(s)
+
+.macro RST_GetDEatBC
+RST 2
+.endm
+ORG 10h
+	LDAX B
+	MOV E,A
+	INX B
+	LDAX B
+	MOV D,A
+	INX B
+	RET
 
 .macro RST_CompareHLDE
 RST 3
@@ -238,12 +253,7 @@ ExpVar:
 	JMP ExpEvaluateOp
 
 ExpInteger:
-	LDAX B
-	MOV E,A
-	INX B
-	LDAX B
-	MOV D,A
-	INX B
+	RST_GetDEatBC
 	
 	JMP ExpEvaluateOp
 
@@ -366,7 +376,6 @@ Error:
 	ANI 0fh
 	ADI 'A'
 	RST_PutChar
-	RST_NewLine
 	
 Ready:
 	LHLD PROG_PTR
@@ -380,7 +389,8 @@ Ready:
 	SPHL
 	; H is also the initial pointer to input buffer
 	PUSH H
-
+	
+	RST_NewLine
 	CALL Getline
 	
 	; Now we have a line terminated by chr(10)
@@ -537,11 +547,16 @@ MR_Loop:
 	JMP MR_CompareBC_atSP
 
 ExecuteDirect: ; Depth = 0
+	; HL contains PROG_PTR
+	; Put the end program marker there
+	; This overwrites the token to execute,
+	; but we've already got that in A
+	MVI M,EndProgram
 	
+	; LIST or RUN?
 	CPI ListSub&0ffh
 	
-	; Otherwise execute the statement
-	; Assume its RUN
+
 	JNZ ExecuteProgram
 	
 	CALL ListSub
@@ -716,9 +731,12 @@ String:
 	INX H
 	CNZ StrCpy ; only call if not zero length
 	JMP Var_Share_Entry2
-	
-LookupTokenNext:
-	INX H
+
+; DE points to start of token
+; HL points 1 char after
+; C contains the token value
+LookupToken:
+
 	MOV C,M	
 	
 	PUSH D
@@ -726,15 +744,11 @@ LookupTokenNext:
 	POP D
 
 	RZ 
-	
-; DE points to start of token
-; HL points 1 char after
-; C contains the token value
-LookupToken:
-	MOV A,M
-	ORA A
 
-  JNZ LookupTokenNext
+	MOV A,M
+	INR A
+	INX H
+  JNZ LookupToken
 	CALL Error
 
 StrcmpEntry:
@@ -801,17 +815,17 @@ CharClass:
 	RET
 
 PrintStringToken:
+	CALL OutputString
+	JMP PrintSubEndTest
+	
+OutputString:
+;Pointer in B points to string token marker
 	INX B
 	LDAX B
 	MOV E,A ; Put length into E
 	INX B
 	
-	CALL OutputString
-	JMP PrintSubEndTest
-	
-OutputString:
-;Pointer in B
-;Length in E
+OutputString_Loop:
   DCR E
   RM
 
@@ -820,7 +834,7 @@ OutputString:
 	
 	INX B
 	
-	JMP OutputString
+	JMP OutputString_Loop
 	
 GetLineNum:
 	; Line number is in DE, look it up in the program and set BC to the position after it
@@ -892,6 +906,36 @@ AdvanceToNextLineNum:
 
 	RET
 
+; List statement main loop
+ListLoop:
+	MVI A,' '
+	RST_PutChar
+	
+	LDAX B
+	CPI EndProgram
+	RZ
+	
+  LXI H,ListLoop	; so that we can loop using RET
+  PUSH H
+
+	LXI H,TokenList
+	
+	CPI StringToken
+  JZ List_String
+  CPI IntegerToken
+  JZ List_Integer
+  CPI LinenumToken
+  JNZ List_Token
+  
+List_LineNum:
+	RST_NewLine
+ 
+List_Integer:
+  INX B
+  RST_GetDEatBC
+ 
+ 	; fall through to PrintInteger
+ 	
 ;Output the value in DE
 PrintInteger:
 	XRA A		; end marker is zero flag
@@ -932,89 +976,50 @@ PrintIntegerLoop2:
 	RZ
 	CP PutChar
 	JMP PrintIntegerLoop2
-
-; List statement main loop
-ListLoop:
-	LDAX B
-	CPI EndProgram
-	RZ
-	
-  LXI H,ListLoop	; so that we can loop using RET
-  PUSH H
-
-  CPI IntegerToken
-  JZ List_Integer
-  CPI LinenumToken
-  JZ List_Integer
-  CPI StringToken
-  JZ List_String
-
-List_Token:
-  ; All other tests failed, so it is from TokenList or a var
- 
-  ; For each byte in TokenList
-  ;   if hi bit set then MOV D,E : MOV E,index, INX, compare byte
-  ;     if match then output string - need to modify output string to use ANI 07fh
-  ; if not found then it must be a var, so fall through
-  LXI H,TokenList-1
  
 List_Token_Loop:
-  INX H
   MOV A,M
-  ORA A
+  INR A
   JZ List_Var
+  INX H
   JP List_Token_Loop
 
-  INX H
+List_Token:
   LDAX B
   CMP M
+  INX H
   JNZ List_Token_Loop
 
 List_Token_String_Loop:
-  INX H
   MOV A,M
   ANI 07fh
   RST_PutChar
   ORA M
+  INX H
   JP List_Token_String_Loop
   
   INX B
   RET
- 
+
+List_String:
+	MVI A,34
+	RST_PutChar
+	CALL OutputString
+	MVI A,34-'A'
+	DB 11h ; opcode for LXI D to eat next 2 bytes
+
 List_Var:
   LDAX B
   INX B
   ADI 'A'
   RST_PutChar
   RET
- 
-List_Integer:
-  INX B
-  LDAX B
-  MOV E,A
-  INX B
-  LDAX B
-  MOV D,A
-  INX B
- 
-  JMP PrintInteger 
- 
-List_String: ; Could be combined with OutputString, saving 7 bytes print string somehow...
-  INX B
-  LDAX B
-  MOV E,A
-  INX B
- 
-  JMP OutputString
 
 
 ; TokenList must be on same page and index to subroutine address must not overlap with other token values
 ORG 02d8h
 
 TokenList:
-	; First 2 bytes make sure that P is the first
-	; char compared
-	DB 128
 	DB PrintSub&0ffh
 	DB "PRIN",'T'+128
 	DB LetSub&0ffh
@@ -1029,14 +1034,14 @@ TokenList:
 	DB "I",'F'+128
 	DB InputSub&0ffh
 	DB "INPU",'T'+128
-	DB 1
+	DB 255
 	DB "EN",'D'+128
-	DB 1
+	DB 255
 ; Before this are keywords allowed at run-time
 	DB "RU",'N'+128
 	DB  ListSub&0ffh
 	DB "LIS",'T'+128
-	DB 1
+	DB 255
 	DB "NE",'W'+128
 	DB CommaToken
 	DB ','+128
@@ -1065,12 +1070,9 @@ TokenList:
 	DB '*'+128
 	DB DivSub&0ffh
 	DB '/'+128
-	DB 0	; 0 can only occur at the end
+	DB 255; 255 can only occur at the end
 
 ExecuteProgram: ; Depth = 0
-	; HL contains PROG_PTR
-	; Put the end program marker there
-	MVI M,EndProgram
 	
 	; Point BC to first line
 	; Skip over the line number
