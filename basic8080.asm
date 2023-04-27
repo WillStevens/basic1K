@@ -60,6 +60,8 @@
 ;			first draft of code for LIST added
 ; 2023-04-25 About 970 bytes long
 ;			LIST command working
+; 2024-04-27 About 950 bytes long
+;			More code size reduction
 ;
 ; Memory map:
 ; system vars
@@ -102,14 +104,17 @@ EndProgram equ 30
 ; Stack is just below input buffer to save code
 ; when initialising
 
-org RAM_TOP-64
+org RAM_TOP-(64+9)
 STACK_INIT:
 INPUT_BUFFER:
-OPERATOR_STACK_PTR:
+OPERATOR_STACK_PTR: ; Lo byte must be B7
+										; or a similar opcode
+										; that doesn't do much
 	DW 0
 OPERATOR_STACK_BASE:
 	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	DB 0,0,0,0,0,0,0,0,0
 
 INPUT_BUFFER_END:
 
@@ -180,8 +185,6 @@ CompareHLDE:
 	STC
 	RET
 
-;TODO - making this return C or NC would enable
-; savings elsewhere
 
 .macro RST_NegateDE
 RST 4
@@ -197,6 +200,20 @@ NegateDE:
 	MOV D,A
 	INX D
 	RET
+
+.macro RST_OutputString
+RST 5
+.endm
+ORG 28h
+OutputString:
+;Pointer in B points to string token marker
+	INX B
+	LDAX B
+	MOV E,A ; Put length into E
+	INX B
+	JMP OutputString_Loop
+
+; 1 byte free
 	
 .macro RST_NewLine
 RST 6
@@ -250,13 +267,18 @@ ExpVar:
 	MOV D,M
 	
 	POP H
-	JMP ExpEvaluateOp
+	
+	; fall through to ExpEvaluateOp
+	db 3eh ; opcode for MVI A eats next byte
 
 ExpInteger:
 	RST_GetDEatBC
 	
-	JMP ExpEvaluateOp
-
+	; fall through to ExpEvaluateOp
+	db 3ah ; opcode for LDA eats 2 bytes
+				 ; and low byte of OPERATOR_STACK_PTR
+				 ; is ORA A, so has no effect
+	
 ExpEvaluateOpRestore:
 	LHLD OPERATOR_STACK_PTR
 	
@@ -478,10 +500,13 @@ DeleteProgramLine:
 	; DE = last
 	; BC = middle
 	
-	JMP MemoryRotate
-	; TODO could save a bye by setting HL=BC
-	; and falling through?
-
+	; fall through
+MemoryRotate:
+MR_SetNextMiddle:
+	; next = middle
+	MOV H,B
+	MOV L,C
+	
 ; MemoryRotate is the entry point for the memory rotate algorithm
 ;(SP) = first
 ;DE = last
@@ -490,6 +515,8 @@ DeleteProgramLine:
 
 ;DE is preserved, no other registers are
 
+	; fall through - doesn't matter which branch is 
+	; taken at JC below
 MR_CompareBC_atSP:
 	XTHL
 	MOV A,L
@@ -505,12 +532,6 @@ MR_SetMiddleNext:
 	; middle = next
 	MOV B,H
 	MOV C,L
-
-MR_SetNextMiddle:
-MemoryRotate:
-	; next = middle
-	MOV H,B
-	MOV L,C
 
 MR_Loop:
 	;while (first != next)
@@ -529,7 +550,7 @@ MR_Loop:
 	PUSH D
 	MOV E,M
 	MOV M,A
-	MOV A,E
+	MOV A,M
 	POP D
 	INX H
 	XTHL
@@ -813,18 +834,9 @@ CharClass:
 	
 	RET
 
-PrintStringToken:
-	CALL OutputString
-	JMP PrintSubEndTest
-	
-OutputString:
-;Pointer in B points to string token marker
-	INX B
-	LDAX B
-	MOV E,A ; Put length into E
-	INX B
-	
 OutputString_Loop:
+;length is in E
+;pointer to string is in B
   DCR E
   RM
 
@@ -1005,7 +1017,7 @@ List_Token_String_Loop:
 List_String:
 	MVI A,34
 	RST_PutChar
-	CALL OutputString
+	RST_OutputString
 	MVI A,34-'A'
 	DB 11h ; opcode for LXI D to eat next 2 bytes
 
@@ -1120,6 +1132,11 @@ PrintSub:
 	PUSH B
 	CALL PrintInteger
 	POP B
+	
+	db 3eh ; MVI A opcode eats next byte
+
+PrintStringToken:
+	RST_OutputString
 
 PrintSubEndTest:
 	LDAX B
