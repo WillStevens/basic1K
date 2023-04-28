@@ -137,10 +137,51 @@ ORG 00h
 	
 ; 5 bytes free
 
-.macro RST_PutChar
+.macro RST_CompareJump
 RST 1
 .endm
 ORG 08h
+; byte after RST is compared with A
+; if equal then jump to address on same page.
+;
+; only use where performance is not
+; important (parsing, printing)
+	XTHL
+	CMP M
+	INX H
+	JNZ CompareJump_Skip
+	MOV L,M
+	
+CompareJump_Skip:
+	
+	; Overflow 3 instructions into next RST, which
+	; is short, so can interleave to fit extra
+	; 3 instructions in
+	
+	DB 0feh ; Opcode for CPI eats next byte
+	
+.macro RST_NewLine
+RST 2
+.endm
+ORG 10h
+NewLine:
+; can only be called from places where the
+; value in DE can be overwritten
+	DB 11h ; Opcode LXI D eats next 2 bytes
+	INX H
+	DB 0feh ; Opcode for CPI eats next byte
+	DB 11h ; Opcode LXI D eats next 2 bytes
+	XTHL
+	RET
+	
+	MVI A,10
+
+	; fall through
+
+.macro RST_PutChar
+RST 3
+.endm
+ORG 18h
 
 ; PutChar is called frequently
 ; it can be called using RST 1
@@ -155,9 +196,9 @@ PutChar:
 ; Space for 5 byte subroutine(s)
 
 .macro RST_GetDEatBC
-RST 2
+RST 4
 .endm
-ORG 10h
+ORG 20h
 	LDAX B
 	MOV E,A
 	INX B
@@ -167,9 +208,9 @@ ORG 10h
 	RET
 
 .macro RST_CompareHLDE
-RST 3
+RST 5
 .endm
-ORG 18h
+ORG 28h
 
 CompareHLDE:
 ; compare HL and DE, return
@@ -187,9 +228,9 @@ CompareHLDE:
 
 
 .macro RST_NegateDE
-RST 4
+RST 6
 .endm
-ORG 20h
+ORG 30h
 NegateDE:
 	;flags are not affected
 	MOV A,E
@@ -201,30 +242,8 @@ NegateDE:
 	INX D
 	RET
 
-.macro RST_OutputString
-RST 5
-.endm
-ORG 28h
-OutputString:
-;Pointer in B points to string token marker
-	INX B
-	LDAX B
-	MOV E,A ; Put length into E
-	INX B
-	JMP OutputString_Loop
 
-; 1 byte free
-	
-.macro RST_NewLine
-RST 6
-.endm
-ORG 30h
-NewLine:
-	MVI A,10
-	RST_PutChar
-	RET
 
-; 4 bytes free
 
 .macro RST_ExpEvaluate
 RST 7
@@ -582,7 +601,10 @@ ExecuteDirect: ; Depth = 0
 	CALL ListSub
 	
 	JMP Ready
-	
+
+;NextToken, Integer, String
+;all need to be on the same page
+; (currently all on page 1)
 NextToken: ; Depth = 1
 	; Get class of first char
 	MOV A,M
@@ -639,12 +661,16 @@ DiffClass:
 	INX H
 	
 	MOV A,B
-	CPI ' '
-	JZ NextToken
-	CPI 0c0h
-	JZ Integer
-	CPI '"'
-	JZ String
+	
+	; These all need to be on the same page
+	; as this block
+	RST_CompareJump
+	DB ' ',(NextToken&0ffh)-1
+	RST_CompareJump
+	DB 0c0h,(Integer&0ffh)-1
+	RST_CompareJump
+	DB '"',(String&0ffh)-1
+	
 	LDAX D
 	SUI 'A'+128	; if hi bit is set then length=1
 	JNC Var			; and it must be a var
@@ -678,42 +704,6 @@ Var_Share_Entry2:
 	
 	JMP NextToken
 
-ParseInteger:
-	; DE points to integer
-	; The integer will be constructed in HL
-	; on return DE points to char after int
-
-	LXI H,0
-	
-ParseIntegerNext:
-	; Muliply by 10
-	PUSH H
-	POP B
-	
-	DAD H
-	DAD H
-	DAD B
-	DAD H
-
-	LDAX D
-	
-	ANI 0fh
-	
-	MVI B,0
-	MOV C,A
-	DAD B
-	
-	LDAX D ; test hi bit
-	ORA A
-	
-	INX D
-	JP ParseIntegerNext
-	
-	XCHG  ; both places where this is called from
-				; require XCHG
-	
-	RET
-	
 Integer:
 	CALL ParseInteger
 	
@@ -751,6 +741,42 @@ String:
 	INX H
 	CNZ StrCpy ; only call if not zero length
 	JMP Var_Share_Entry2
+	
+ParseInteger:
+	; DE points to integer
+	; The integer will be constructed in HL
+	; on return DE points to char after int
+
+	LXI H,0
+	
+ParseIntegerNext:
+	; Muliply by 10
+	PUSH H
+	POP B
+	
+	DAD H
+	DAD H
+	DAD B
+	DAD H
+
+	LDAX D
+	
+	ANI 0fh
+	
+	MVI B,0
+	MOV C,A
+	DAD B
+	
+	LDAX D ; test hi bit
+	ORA A
+	
+	INX D
+	JP ParseIntegerNext
+	
+	XCHG  ; both places where this is called from
+				; require XCHG
+	
+	RET
 
 ; DE points to start of token
 ; HL points 1 char after
@@ -834,6 +860,13 @@ CharClass:
 	
 	RET
 
+OutputString:
+;Pointer in B points to string token marker
+	INX B
+	LDAX B
+	MOV E,A ; Put length into E
+	INX B
+	
 OutputString_Loop:
 ;length is in E
 ;pointer to string is in B
@@ -932,11 +965,13 @@ ListLoop:
   PUSH H
 
 	LXI H,TokenList
-	
-	CPI StringToken
-  JZ List_String
-  CPI IntegerToken
-  JZ List_Integer
+
+	; These need to be on same page
+	; currently on page 2
+	RST_CompareJump
+	DB StringToken,(List_String&0ffh)-1
+	RST_CompareJump
+	DB IntegerToken,(List_Integer&0ffh)-1
   CPI LinenumToken
   JNZ List_Token
   
@@ -1017,7 +1052,7 @@ List_Token_String_Loop:
 List_String:
 	MVI A,34
 	RST_PutChar
-	RST_OutputString
+	CALL OutputString
 	MVI A,34-'A'
 	DB 11h ; opcode for LXI D to eat next 2 bytes
 
@@ -1126,23 +1161,30 @@ ExecuteProgramNotLineNum:
 	
 PrintSub:
 	LDAX B
-	CPI StringToken
-	JZ PrintStringToken
+	RST_CompareJump
+	DB StringToken,(PrintStringToken&0ffh)-1
+
 	RST_ExpEvaluate
 	PUSH B
 	CALL PrintInteger
 	POP B
 	
-	db 3eh ; MVI A opcode eats next byte
-
+	JMP PrintSubEndTest
+	; TODO when code has stabilised, may be
+	; able to skip over first two bytes below
+	; if low byte of OutputString is a
+	; do-little opcode (saving 2 bytes)
+	
 PrintStringToken:
-	RST_OutputString
+	CALL OutputString
 
 PrintSubEndTest:
 	LDAX B
 	INX B
-	CPI CommaToken
-	JZ PrintSub
+	
+	RST_CompareJump
+	DB CommaToken,(PrintSub&0ffh)-1
+	
 	DCX B
 	RST_NewLine
 	RET
