@@ -67,7 +67,7 @@
 ;			2 bytes for every CPI JZ where
 ;			the jump is to same page
 ; 2023-04-28 Free space: 78 bytes
-; 2023-04-29 Free space: 80 bytes
+; 2023-04-29 Free space: 84 bytes
 ;			Initialise PROG_PTR at start
 ;			Added NEW and END
 ;			Added direct statement handling
@@ -75,7 +75,7 @@
 ; Memory map:
 ; system vars
 ; var space : 52 bytes
-; input buffer : 64 bytes
+; input buffer : 73 bytes
 ; (also used as expression stack)
 ; program area
 ; stack area - top of RAM
@@ -308,8 +308,8 @@ ExpInteger:
 	
 	; fall through to ExpEvaluateOp
 	db 3ah ; opcode for LDA eats 2 bytes
-				 ; and low byte of OPERATOR_STACK_PTR
-				 ; is ORA A, so has no effect
+				 ; and 3rd byte of instruction
+				 ; is RLC, so has no effect
 	
 ExpEvaluateOpRestore:
 	LHLD OPERATOR_STACK_PTR
@@ -402,6 +402,28 @@ ExpLeftBrace:
 	INX H
 	
 	JMP ExpEvaluateNum
+
+; This 9 byte routine must reside in page 0
+; so that the last byte of a call to it is NOP
+OutputString:
+;Pointer in B points to string token marker
+	; we can get the length into D using
+	; RST_GetDEatBC
+	; we just ignore E
+	RST_GetDEatBC
+	
+OutputString_Loop:
+;length is in D
+;pointer to string is in B
+  DCR D
+  RM
+
+	LDAX B
+	RST_PutChar
+	
+	INX B
+	
+	JMP OutputString_Loop
 	
 GetLine:
 	IN 1
@@ -470,7 +492,6 @@ ExecuteDirect: ; Depth = 0
 	
 	MOV B,H
 	MOV C,L
-	INX B
 	
 	JMP ExecuteProgramNotLineNum
 	
@@ -1067,7 +1088,7 @@ List_Var:
 
 
 ; Index to subroutine address must not overlap with other token values
-ORG 02d0h
+ORG 02d9h
 
 TokenList:
 	DB PrintSub&0ffh
@@ -1084,7 +1105,7 @@ TokenList:
 	DB "I",'F'+128
 	DB InputSub&0ffh
 	DB "INPU",'T'+128
-	DB RunSub&0ffh
+	DB ExecuteProgram&0ffh
 ; Before this are keywords allowed at run-time
 	DB "RU",'N'+128
 	DB ListSub&0ffh
@@ -1173,9 +1194,8 @@ PrintSub:
 	
 	DB 11h ; Skip over first 2 bytes of call
 				 ; instruction to fall through
-				 ; Last byte is F7=RST 6 opcode,
-				 ; which just harmlessly calls NegateDE 
-				 ; (saves 2 bytes compared to JMP)
+				 ; OutputString is in page 0 so
+				 ; last byte is NOP
 PrintStringToken:
 	CALL OutputString
 
@@ -1270,9 +1290,6 @@ InputSub:
 	INX B
 	
 	JMP AssignToVar
-
-RunSub:
-	JMP ExecuteProgram
 	
 ListSub:
   LXI B,PROG_BASE
@@ -1420,27 +1437,3 @@ DivLoop:
 	
 	RET
 	
-org 03f7h
-; This 9 byte routine must reside here so that
-; the low byte of its address is a fairly
-; harmless opcode (RST 6 - RST_NegateDE)
-
-OutputString:
-;Pointer in B points to string token marker
-	; we can get the length into D using
-	; RST_GetDEatBC
-	; we just ignore E
-	RST_GetDEatBC
-	
-OutputString_Loop:
-;length is in D
-;pointer to string is in B
-  DCR D
-  RM
-
-	LDAX B
-	RST_PutChar
-	
-	INX B
-	
-	JMP OutputString_Loop
