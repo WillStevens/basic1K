@@ -472,7 +472,7 @@ ExecuteDirect: ; Depth = 0
 	MOV C,L
 	INX B
 	
-	JZ ExecuteProgramNotLineNum
+	JMP ExecuteProgramNotLineNum
 	
 LineStartsWithInt:
 
