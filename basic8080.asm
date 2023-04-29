@@ -60,9 +60,18 @@
 ;			first draft of code for LIST added
 ; 2023-04-25 About 970 bytes long
 ;			LIST command working
-; 2024-04-27 About 950 bytes long
+; 2023-04-27 About 950 bytes long
 ;			More code size reduction
-;
+; 2023-04-28 About 950 bytes long
+;			used RST_CompareJump to save
+;			2 bytes for every CPI JZ where
+;			the jump is to same page
+; 2023-04-28 Free space: 78 bytes
+; 2023-04-29 Free space: 80 bytes
+;			Initialise PROG_PTR at start
+;			Added NEW and END
+;			Added direct statement handling
+
 ; Memory map:
 ; system vars
 ; var space : 52 bytes
@@ -126,17 +135,20 @@ VAR_SPACE:
 	DW 0,0,0,0,0,0,0,0,0,0,0,0,0
 	
 PROG_PTR:
-	DW PROG_BASE
+	DW 0
 PROG_PARSE_PTR:
-	DW PROG_BASE
+	DW 0
 
 PROG_BASE:
 
 ORG 00h
-	JMP Ready
-	
-; 5 bytes free
+	; put PROG_BASE into PROG_PTR and
+	; jump to Ready
+	LXI H,PROG_BASE
+	JMP SetProgPtrReady
 
+	; 2 bytes free
+	
 .macro RST_CompareJump
 RST 1
 .endm
@@ -263,12 +275,13 @@ ExpEvaluateNum:
 	; Expecting ( var integer or - sign
 	LDAX B
 	INX B
-	CPI LeftBraceSub&0ffh
-	JZ ExpLeftBrace
-	CPI IntegerToken
-	JZ ExpInteger
-	CPI SubSub&0xff
-	JZ ExpNegate
+	
+	RST_CompareJump
+	DB LeftBraceSub&0ffh,(ExpLeftBrace&0ffh)-1
+	RST_CompareJump
+	DB IntegerToken,(ExpInteger&0ffh)-1
+	RST_CompareJump
+	DB SubSub&0xff,(ExpNegate&0ffh)-1
 	CPI 26
 	CNC Error
 	
@@ -310,8 +323,8 @@ ExpEvaluateOp:
 	DCX H	; decrement now in anticipation of
 				; needing to look at the top
 				; in a moment
-	CPI OPERATOR_STACK_BASE&0ffh
-	JZ SkipExpApplyOp
+	RST_CompareJump
+	DB OPERATOR_STACK_BASE&0ffh,(SkipExpApplyOp&0ffh)-1
 	
 	LDAX B
 	
@@ -419,9 +432,6 @@ Error:
 	RST_PutChar
 	
 Ready:
-	LHLD PROG_PTR
-	SHLD PROG_PARSE_PTR
-
 	; Set stack pointer to just below input buffer
 	; Do this every time to guard against
 	; GOSUB with no RETURN errors
@@ -434,16 +444,37 @@ Ready:
 	RST_NewLine
 	CALL Getline
 	
+	LHLD PROG_PTR
+	SHLD PROG_PARSE_PTR
+	
 	; Now we have a line terminated by chr(10)
 	; Get location of input buffer into HL
-	POP H
+	; and put PROG_PTR onto stack because
+	; we will needed it after parsing
+	XTHL
 
 	CALL NextToken
 	
-	LHLD PROG_PTR
+	POP H ; get PROG_PTR back
+	
 	MOV A,M
-	CPI IntegerToken
-	JNZ ExecuteDirect
+	RST_CompareJump
+	DB IntegerToken,(LineStartsWithInt&0ffh)-1
+
+ExecuteDirect: ; Depth = 0
+	; HL contains PROG_PTR
+	; Put the end program marker there
+	; This overwrites the token to execute,
+	; but we've already got that in A
+	MVI M,EndProgram
+	
+	MOV B,H
+	MOV C,L
+	INX B
+	
+	JZ ExecuteProgramNotLineNum
+	
+LineStartsWithInt:
 
 	; Is it an integer all by itself? 
 	; If so then delete the line
@@ -457,6 +488,8 @@ Ready:
 	
 	MVI M,LinenumToken
 	LHLD PROG_PARSE_PTR
+	
+SetProgPtrReady:
 	SHLD PROG_PTR
 	
 	JMP Ready
@@ -585,23 +618,6 @@ MR_Loop:
 
 	JMP MR_CompareBC_atSP
 
-ExecuteDirect: ; Depth = 0
-	; HL contains PROG_PTR
-	; Put the end program marker there
-	; This overwrites the token to execute,
-	; but we've already got that in A
-	MVI M,EndProgram
-	
-	; LIST or RUN?
-	CPI ListSub&0ffh
-	
-
-	JNZ ExecuteProgram
-	
-	CALL ListSub
-	
-	JMP Ready
-
 ;NextToken, Integer, String
 ;all need to be on the same page
 ; (currently all on page 1)
@@ -698,6 +714,8 @@ Var:
 Var_Share_Entry:
 	INX H
 Var_Share_Entry2:
+	MVI M,EndProgram ; will get overwritten by
+									 ; next token
 	SHLD PROG_PARSE_PTR
 	
 	POP H
@@ -859,26 +877,6 @@ CharClass:
 					 ; together
 	
 	RET
-
-OutputString:
-;Pointer in B points to string token marker
-	INX B
-	LDAX B
-	MOV E,A ; Put length into E
-	INX B
-	
-OutputString_Loop:
-;length is in E
-;pointer to string is in B
-  DCR E
-  RM
-
-	LDAX B
-	RST_PutChar
-	
-	INX B
-	
-	JMP OutputString_Loop
 	
 GetLineNum:
 	; Line number is in DE, look it up in the program and set BC to the second byte of line num
@@ -914,8 +912,8 @@ ATNLN_Loop:
 	RZ
 	
 	INR A
-	CPI (IntegerToken-LinenumToken+1)
-	JZ ATNLN_Int
+	RST_CompareJump
+	DB (IntegerToken-LinenumToken+1),(ATNLN_Int&0ffh)-1
 	CPI (StringToken-LinenumToken+1)
 	JNZ ATNLN_NotInt 
 	
@@ -927,9 +925,13 @@ ATNLN_Int:
 	ADD C
 	MOV C,A
 	
-	; TODO save a byte with ADC B, SUB C, MOV B,A
-	MVI A,0
+	; save a byte with ADC B, SUB C, MOV B,A
+	;MVI A,0
+	;ADC B
+	;MOV B,A
+	
 	ADC B
+	SUB C
 	MOV B,A
 	
 ATNLN_NotInt:
@@ -1064,8 +1066,8 @@ List_Var:
   RET
 
 
-; TokenList must be on same page and index to subroutine address must not overlap with other token values
-ORG 02d8h
+; Index to subroutine address must not overlap with other token values
+ORG 02d0h
 
 TokenList:
 	DB PrintSub&0ffh
@@ -1082,15 +1084,15 @@ TokenList:
 	DB "I",'F'+128
 	DB InputSub&0ffh
 	DB "INPU",'T'+128
-	DB 255
-	DB "EN",'D'+128
-	DB 255
+	DB RunSub&0ffh
 ; Before this are keywords allowed at run-time
 	DB "RU",'N'+128
-	DB  ListSub&0ffh
+	DB ListSub&0ffh
 	DB "LIS",'T'+128
-	DB 255
+	DB NewSub&0ffh
 	DB "NE",'W'+128
+	DB EndSub&0ffh
+	DB "EN",'D'+128
 	DB CommaToken
 	DB ','+128
 	DB LeftBraceSub&0ffh
@@ -1169,12 +1171,11 @@ PrintSub:
 	CALL PrintInteger
 	POP B
 	
-	JMP PrintSubEndTest
-	; TODO when code has stabilised, may be
-	; able to skip over first two bytes below
-	; if low byte of OutputString is a
-	; do-little opcode (saving 2 bytes)
-	
+	DB 11h ; Skip over first 2 bytes of call
+				 ; instruction to fall through
+				 ; Last byte is F7=RST 6 opcode,
+				 ; which just harmlessly calls NegateDE 
+				 ; (saves 2 bytes compared to JMP)
 PrintStringToken:
 	CALL OutputString
 
@@ -1269,11 +1270,20 @@ InputSub:
 	INX B
 	
 	JMP AssignToVar
+
+RunSub:
+	JMP ExecuteProgram
 	
 ListSub:
   LXI B,PROG_BASE
   JMP ListLoop
-  
+
+NewSub:
+	RST 0
+	
+EndSub:
+	JMP Ready
+	
 LeftBraceSub:
 	LDAX B
 	; Is current operator a right brace?
@@ -1409,3 +1419,28 @@ DivLoop:
 	RST_NegateDE
 	
 	RET
+	
+org 03f7h
+; This 9 byte routine must reside here so that
+; the low byte of its address is a fairly
+; harmless opcode (RST 6 - RST_NegateDE)
+
+OutputString:
+;Pointer in B points to string token marker
+	; we can get the length into D using
+	; RST_GetDEatBC
+	; we just ignore E
+	RST_GetDEatBC
+	
+OutputString_Loop:
+;length is in D
+;pointer to string is in B
+  DCR D
+  RM
+
+	LDAX B
+	RST_PutChar
+	
+	INX B
+	
+	JMP OutputString_Loop
