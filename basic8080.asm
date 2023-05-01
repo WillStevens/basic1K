@@ -71,7 +71,10 @@
 ;			Initialise PROG_PTR at start
 ;			Added NEW and END
 ;			Added direct statement handling
-
+; 2023-04-30 Free space: 84 bytes
+;			Fixed bugs with deleting first and
+;			last program lines
+;
 ; Memory map:
 ; system vars
 ; var space : 52 bytes
@@ -499,6 +502,8 @@ LineStartsWithInt:
 
 	; Is it an integer all by itself? 
 	; If so then delete the line
+	; TODO change this so that it uses CPI
+	; and it can be replaced with CompareJump
 	LDA PROG_PARSE_PTR
 	SBI 3
 	CMP L
@@ -516,13 +521,12 @@ SetProgPtrReady:
 	JMP Ready
 
 DeleteProgramLine:
-	INX H
-	MOV E,M
-	INX H
-	MOV D,M
+	PUSH H
+	POP B
+	INX B
+	RST_GetDEatBC
 	
-	DCX H
-	DCX H
+	MVI M,EndProgram
 	
 	CALL GetLineNum
 	JNZ Ready		; if line not found, do nothing
@@ -539,8 +543,7 @@ DeleteProgramLine:
 	
 	; Both DE and (SP) contain 'first' ptr
 	; HL contains PROG_PTR
-	; HL was set to PROG_PTR at call, and also
-	; may bave been set in AdvanceToNextLineNum
+	; (HL was set to PROG_PTR at call)
 	
 	; B-(SP) is the amount we need to set PROG_PTR back by...
 	XTHL	; DE=first, HL = first, (SP)=PROG_PTR
@@ -907,7 +910,7 @@ GetLineNum:
 	; to the first byte of the line with number
 	; greater than the request
 	
-	LXI B,PROG_BASE-1
+	LXI B,PROG_BASE
 
 GetLineNumLoop:
 	INX B
