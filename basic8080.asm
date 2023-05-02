@@ -71,9 +71,12 @@
 ;			Initialise PROG_PTR at start
 ;			Added NEW and END
 ;			Added direct statement handling
-; 2023-04-30 Free space: 84 bytes
+; 2023-04-30 Free space: 86 bytes
 ;			Fixed bugs with deleting first and
 ;			last program lines
+; 2023-05-02 Free space: about 60 bytes
+;			added code to allow out-of-order
+;			line number entry (first draft)
 ;
 ; Memory map:
 ; system vars
@@ -148,9 +151,9 @@ ORG 00h
 	; put PROG_BASE into PROG_PTR and
 	; jump to Ready
 	LXI H,PROG_BASE
+	XRA A 
+	INR A ; make sure that Z is not set
 	JMP SetProgPtrReady
-
-	; 2 bytes free
 	
 .macro RST_CompareJump
 RST 1
@@ -499,33 +502,76 @@ ExecuteDirect: ; Depth = 0
 	JMP ExecuteProgramNotLineNum
 	
 LineStartsWithInt:
-
-	; Is it an integer all by itself? 
-	; If so then delete the line
-	; TODO change this so that it uses CPI
-	; and it can be replaced with CompareJump
-	LDA PROG_PARSE_PTR
-	SBI 3
-	CMP L
-	JZ DeleteProgramLine
-
-	; If first token was an int, change it to a
-	; LinenumToken and add the line to the program
-	
-	MVI M,LinenumToken
-	LHLD PROG_PARSE_PTR
-	
-SetProgPtrReady:
-	SHLD PROG_PTR
-	
-	JMP Ready
-
-DeleteProgramLine:
+	; Get the line number into DE
 	PUSH H
 	POP B
 	INX B
 	RST_GetDEatBC
+
+	; Is it an integer all by itself? 
+	; If so then delete the line
 	
+	LDA PROG_PARSE_PTR
+	SUB L
+	RST_CompareJump
+	DB 3,(DeleteProgramLine&0ffh)-1
+
+	; If first token was an int, change it to a
+	; LinenumToken and add the line to the program
+	
+
+	; call GetLineNum to find either the line, or
+	; pointer to next location in program after it
+	
+	; save line number for later
+	PUSH D
+	
+	; Temporarily put this in so that
+	; GetLineNum works
+	MVI M,EndProgram
+	
+	CALL GetLineNum
+	
+	; if GetLineNum returns a match then ATNLN
+	CZ ATNLN_NotInt
+	
+	MVI M,LineNumToken
+	
+	; do a memory rotate with
+	; first = GetLine/ATNLN address
+	; middle = PROG_PTR
+	; last = PROG_PARSE_PTR
+	 match
+	
+	; DE=last
+	LHLD PROG_PARSE_PTR
+	XCHG
+	
+	; (SP)=first
+	PUSH B
+	
+	; BC=middle
+	LHLD PROG_PTR
+	MOV B,H
+	MOV C,L
+	
+	CALL Memory_Rotate
+	; Z is now set
+	
+	; then set PROG_PTR to PROG_PARSE_PTR
+	; then delete original line if there was a
+	; match earlier
+
+	LHLD PROG_PARSE_PTR
+	
+SetProgPtrReady: ; shared code
+	SHLD PROG_PTR
+	
+	JNZ Ready
+	
+	POP D
+	
+DeleteProgramLine:
 	MVI M,EndProgram
 	
 	CALL GetLineNum
@@ -535,7 +581,7 @@ DeleteProgramLine:
 	
 	CALL ATNLN_NotInt
 	
-	; GetLineNum goes to the second bute of line number, so go back to line num
+	; GetLineNum goes to the second byte of line number, so go back to line num
 	POP D
 	DCX D
 	DCX D
@@ -566,17 +612,17 @@ DeleteProgramLine:
 	
 	SHLD PROG_PTR
 
+	; (SP) = first
+	; DE = last
+	; BC = middle
+
 	; Z will still be as returned from
 	; AdvanceToNextLineNum
 	; if Z was clear it means that line to delete
 	; is last line, so no need to do MemoryRotate
-	JNZ Ready
+	CZ MemoryRotate
+	JMP Ready
 	
-	; (SP) = first
-	; DE = last
-	; BC = middle
-	
-	; fall through
 MemoryRotate:
 MR_SetNextMiddle:
 	; next = middle
@@ -618,7 +664,7 @@ MR_Loop:
 	XTHL
 	XCHG
 	
-	JZ Ready
+	RZ
 
 	;swap (*first++,*next++)
 	MOV A,M
@@ -904,6 +950,8 @@ CharClass:
 	
 GetLineNum:
 	; Line number is in DE, look it up in the program and set BC to the second byte of line num
+	; preserves DE
+	; HL not used
 	; return with Z set if successful
 	;
 	; Z clear if not successful, and BC points
