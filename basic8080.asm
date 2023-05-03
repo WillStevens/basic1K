@@ -536,8 +536,6 @@ LineStartsWithInt:
 	; an error, user must delete line first
 	CZ Error
 	
-	MVI M,LineNumToken
-	
 	; do a memory rotate with
 	; first = GetLine/ATNLN address
 	; middle = PROG_PTR
@@ -552,6 +550,7 @@ LineStartsWithInt:
 	
 	; BC=middle
 	LHLD PROG_PTR
+	MVI M,LineNumToken ; undo what we did earlier
 	MOV B,H
 	MOV C,L
 	
