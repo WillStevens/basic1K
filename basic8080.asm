@@ -77,6 +77,11 @@
 ; 2023-05-02 Free space: about 60 bytes
 ;			added code to allow out-of-order
 ;			line number entry (first draft)
+; 2023-05-02 Free space: about 54 bytes
+;			all basic functionality now implemented
+;			items to improve:
+;			division
+;			syntax checking
 ;
 ; Memory map:
 ; system vars
@@ -567,17 +572,18 @@ SetProgPtrReady: ; shared code
 	JMP MemoryRotate
 	
 DeleteProgramLine:
+	PUSH H
 	CALL GetLineNum
+	POP H
 	JNZ Ready		; if line not found, do nothing
 
 	PUSH B
 	
+	INX B
+	INX B
 	CALL ATNLN_NotInt
 	
-	; GetLineNum goes to the second byte of line number, so go back to line num
 	POP D
-	DCX D
-	DCX D
 	PUSH D
 	
 	; Both DE and (SP) contain 'first' ptr
@@ -666,7 +672,7 @@ MR_Loop:
 	PUSH D
 	MOV E,M
 	MOV M,A
-	MOV A,M
+	MOV A,E
 	POP D
 	INX H
 	XTHL
@@ -943,7 +949,7 @@ CharClass:
 	RET
 	
 GetLineNum:
-	; Line number is in DE, look it up in the program and set BC to the second byte of line num
+	; Line number is in DE, look it up in the program and set BC to the line num token
 	; preserves DE
 	; HL is not preserved
 	; return with Z set if successful
@@ -973,6 +979,9 @@ GetLineNumLoop:
 				; C clear if DE <= (BC)
 	JC GetLineNumLoop
 	
+	DCX B
+	DCX B
+	DCX B
 	; Now we want Z set if DE=(BC), clear
 	; otherwise 
 	ORA L
@@ -1297,7 +1306,6 @@ GosubSub: ; Depth = 1
 GotoSub:
 	RST_ExpEvaluate
 	CALL GetLineNum
-	INX B
 	RZ
 	CALL Error
 	
