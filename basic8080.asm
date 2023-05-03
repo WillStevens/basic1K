@@ -508,6 +508,10 @@ LineStartsWithInt:
 	INX B
 	RST_GetDEatBC
 
+	; Put this in so that
+	; GetLineNum works
+	MVI M,EndProgram
+	
 	; Is it an integer all by itself? 
 	; If so then delete the line
 	
@@ -526,14 +530,11 @@ LineStartsWithInt:
 	; save line number for later
 	PUSH D
 	
-	; Temporarily put this in so that
-	; GetLineNum works
-	MVI M,EndProgram
-	
 	CALL GetLineNum
 	
-	; if GetLineNum returns a match then ATNLN
-	CZ ATNLN_NotInt
+	; if GetLineNum returns a match then this is
+	; an error, user must delete line first
+	CZ Error
 	
 	MVI M,LineNumToken
 	
@@ -541,7 +542,6 @@ LineStartsWithInt:
 	; first = GetLine/ATNLN address
 	; middle = PROG_PTR
 	; last = PROG_PARSE_PTR
-	 match
 	
 	; DE=last
 	LHLD PROG_PARSE_PTR
@@ -555,13 +555,9 @@ LineStartsWithInt:
 	MOV B,H
 	MOV C,L
 	
-	CALL Memory_Rotate
-	; Z is now set
+  ; then set PROG_PTR to PROG_PARSE_PTR
+	XRA A ; make sure we don't execute JNZ Ready
 	
-	; then set PROG_PTR to PROG_PARSE_PTR
-	; then delete original line if there was a
-	; match earlier
-
 	LHLD PROG_PARSE_PTR
 	
 SetProgPtrReady: ; shared code
@@ -569,11 +565,9 @@ SetProgPtrReady: ; shared code
 	
 	JNZ Ready
 	
-	POP D
+	JMP MemoryRotate
 	
 DeleteProgramLine:
-	MVI M,EndProgram
-	
 	CALL GetLineNum
 	JNZ Ready		; if line not found, do nothing
 
@@ -620,10 +614,11 @@ DeleteProgramLine:
 	; AdvanceToNextLineNum
 	; if Z was clear it means that line to delete
 	; is last line, so no need to do MemoryRotate
-	CZ MemoryRotate
-	JMP Ready
+
+	JNZ Ready
 	
 MemoryRotate:
+
 MR_SetNextMiddle:
 	; next = middle
 	MOV H,B
@@ -664,7 +659,7 @@ MR_Loop:
 	XTHL
 	XCHG
 	
-	RZ
+	JZ Ready
 
 	;swap (*first++,*next++)
 	MOV A,M
@@ -951,7 +946,7 @@ CharClass:
 GetLineNum:
 	; Line number is in DE, look it up in the program and set BC to the second byte of line num
 	; preserves DE
-	; HL not used
+	; HL is not preserved
 	; return with Z set if successful
 	;
 	; Z clear if not successful, and BC points
@@ -961,21 +956,29 @@ GetLineNum:
 	LXI B,PROG_BASE
 
 GetLineNumLoop:
+	CALL AdvanceToNextLineNum
+	RNZ
+	
 	INX B
 	
-	; Test for (BC)=DE, and return if true
+	; Test for DE <= (BC), and return if true
+	; TODO - check that all of the logic works
+	; in all cases
 	LDAX B
 	SUB E
+	MOV L,A
 	INX B
-	JNZ GetLineNumNext
 	LDAX B
-	SUB D
-	RZ
+	INX B
+	SBB D ; C set if DE > (BC), and Z not set
+				; C clear if DE <= (BC)
+	JC GetLineNumLoop
 	
-GetLineNumNext:
-	CALL ATNLN_NotInt
-	RNZ
-	JMP GetLineNumLoop
+	; Now we want Z set if DE=(BC), clear
+	; otherwise 
+	ORA L
+	
+	RET
 	
 
 ATNLN_Loop:
