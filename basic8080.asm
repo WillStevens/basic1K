@@ -525,15 +525,8 @@ LineStartsWithInt:
 	RST_CompareJump
 	DB 3,(DeleteProgramLine&0ffh)-1
 
-	; If first token was an int, change it to a
-	; LinenumToken and add the line to the program
-	
-
 	; call GetLineNum to find either the line, or
 	; pointer to next location in program after it
-	
-	; save line number for later
-	PUSH D
 	
 	CALL GetLineNum
 	
@@ -561,15 +554,11 @@ LineStartsWithInt:
 	
   ; then set PROG_PTR to PROG_PARSE_PTR
 	XRA A ; make sure we don't execute JNZ Ready
+				; in a moment
 	
 	LHLD PROG_PARSE_PTR
 	
-SetProgPtrReady: ; shared code
-	SHLD PROG_PTR
-	
-	JNZ Ready
-	
-	JMP MemoryRotate
+	JMP SetProgPtrReady
 	
 DeleteProgramLine:
 	PUSH H
@@ -609,17 +598,23 @@ DeleteProgramLine:
 	; Now DE contains PROG_PTR and HL contains
 	; what we want to put into PROG_PTR
 	
+SetProgPtrReady: ; code shared by three things
 	SHLD PROG_PTR
 
 	; (SP) = first
 	; DE = last
 	; BC = middle
 
+	; If calling from DeleteProgramLine then
 	; Z will still be as returned from
 	; AdvanceToNextLineNum
 	; if Z was clear it means that line to delete
 	; is last line, so no need to do MemoryRotate
 
+	; If calling from insert then Z will be set
+	
+	; If calling from RST 0 Z will be clear
+	
 	JNZ Ready
 	
 MemoryRotate:
@@ -1167,15 +1162,15 @@ TokenList:
 	DB "I",'F'+128
 	DB InputSub&0ffh
 	DB "INPU",'T'+128
-	DB ExecuteProgram&0ffh
+	DB EndSub&0ffh
+	DB "EN",'D'+128
 ; Before this are keywords allowed at run-time
+	DB ExecuteProgram&0ffh
 	DB "RU",'N'+128
 	DB ListSub&0ffh
 	DB "LIS",'T'+128
 	DB NewSub&0ffh
 	DB "NE",'W'+128
-	DB EndSub&0ffh
-	DB "EN",'D'+128
 	DB CommaToken
 	DB ','+128
 	DB LeftBraceSub&0ffh
@@ -1205,45 +1200,6 @@ TokenList:
 	DB '/'+128
 	DB 255; 255 can only occur at the end
 
-ExecuteProgram: ; Depth = 0
-	
-	; Point BC to first line
-	; Skip over the line number
-	LXI B,PROG_BASE+3
-
-ExecuteProgramLoop:
-	; Check that we haven't reached end of program
-	LDAX B
-	CPI EndProgram
-	JZ Ready
-	
-	; Is it a line number?
-	CPI LinenumToken
-	JNZ ExecuteProgramNotLineNum
-	
-	INX B
-	INX B
-	INX B
-	LDAX B
-	
-ExecuteProgramNotLineNum:
-	INX B
-
-	; TODO Check that it is a keyword allowed in a program
-	
-	; Put return address onto stack
-	LXI H,ExecuteProgramLoop
-	PUSH H
-	
-	; Put pointer to call address into HL
-	MOV L,A
-	; ExecuteProgramLoop must be on the same page
-	; page as PrintSub so that we don't have to
-	; update H
-	
-	; Jump to it
-	PCHL
-	
 PrintSub:
 	LDAX B
 	RST_CompareJump
@@ -1351,16 +1307,58 @@ InputSub:
 	INX B
 	
 	JMP AssignToVar
+
+EndSub:
+	JMP Ready
+
+ExecuteProgram: ; Depth = 0
 	
+	; Point BC to first line
+	; Skip over the line number
+	LXI B,PROG_BASE+3
+
+ExecuteProgramLoop:
+	; Check that we haven't reached end of program
+	LDAX B
+	CPI EndProgram
+	JZ Ready
+	
+	; Is it a line number?
+	CPI LinenumToken
+	JNZ ExecuteProgramNotLineNum
+	
+	INX B
+	INX B
+	INX B
+	LDAX B
+	
+ExecuteProgramNotLineNum:
+	INX B
+
+	; Check that it is a keyword allowed in a
+	; program - expecting a carry here
+	CPI ExecuteProgrm&0ffh
+	CNC Error
+	
+	; Put return address onto stack
+	LXI H,ExecuteProgramLoop
+	PUSH H
+	
+	; Put pointer to call address into HL
+	MOV L,A
+	; ExecuteProgramLoop must be on the same page
+	; page as PrintSub so that we don't have to
+	; update H
+	
+	; Jump to it
+	PCHL
+
 ListSub:
   LXI B,PROG_BASE
   JMP ListLoop
 
 NewSub:
 	RST 0
-	
-EndSub:
-	JMP Ready
 	
 LeftBraceSub:
 	LDAX B
