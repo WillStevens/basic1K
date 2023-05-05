@@ -82,6 +82,11 @@
 ;			items to improve:
 ;			division
 ;			syntax checking
+; 2023-05-04 Free space: about 79 bytes
+;			more code size reduction
+;			parrly through handling EndProgram
+;			and LineNum better in threaded code
+;			likely to have introduced bugs
 ;
 ; Memory map:
 ; system vars
@@ -99,15 +104,10 @@ RAM_TOP equ 0800h ; 1 more than top byte of RAM
 
 ; Token values
 ; 0-25 are variables
-; StringToken ; 26
-IntegerToken equ 28 ; followed by 16-bit integer
-LinenumToken equ 27 ; followed by 16-bit integer
-										; followed by 1 byte length
-										; followed by 2 byte ptr
-										; to next line (0 = end)
+
+IntegerToken equ 27 ; followed by 16-bit integer
 StringToken equ 26 ; followed by 1 byte length, followed by string characters
-CommaToken equ 29
-EndProgram equ 30
+CommaToken equ 28
 
 ; Callable tokens are low byte of subroutine to call
 
@@ -460,6 +460,8 @@ Error:
 	RST_PutChar
 	POP PSW		; discard return address and
 						; get error code
+						; TODO this should be getting low
+						; byte, but A will have high byte
 	ANI 0fh
 	ADI 'A'
 	RST_PutChar
@@ -491,31 +493,22 @@ Ready:
 	POP H ; get PROG_PTR back
 	
 	MOV A,M
-	RST_CompareJump
-	DB IntegerToken,(LineStartsWithInt&0ffh)-1
-
-ExecuteDirect: ; Depth = 0
-	; HL contains PROG_PTR
-	; Put the end program marker there
+	; Regardless of which branch taken
+	; we need this marker here.
 	; This overwrites the token to execute,
 	; but we've already got that in A
-	MVI M,EndProgram
+	MVI M,EndProgram&0ffh
 	
-	MOV B,H
-	MOV C,L
+	PUSH H
+	POP B
 	
-	JMP ExecuteProgramNotLineNum
+	CPI IntegerToken
+	JNZ ExecuteDirect
 	
 LineStartsWithInt:
 	; Get the line number into DE
-	PUSH H
-	POP B
 	INX B
 	RST_GetDEatBC
-
-	; Put this in so that
-	; GetLineNum works
-	MVI M,EndProgram
 	
 	; Is it an integer all by itself? 
 	; If so then delete the line
@@ -548,7 +541,7 @@ LineStartsWithInt:
 	
 	; BC=middle
 	LHLD PROG_PTR
-	MVI M,LineNumToken ; undo what we did earlier
+	MVI M,LineNumSub&0ffh; undo what we did earlier
 	MOV B,H
 	MOV C,L
 	
@@ -569,8 +562,7 @@ DeleteProgramLine:
 	PUSH B
 	
 	INX B
-	INX B
-	CALL ATNLN_NotInt
+	CALL ATNLN_Int
 	
 	POP D
 	PUSH D
@@ -779,7 +771,7 @@ Var:
 Var_Share_Entry:
 	INX H
 Var_Share_Entry2:
-	MVI M,EndProgram ; will get overwritten by
+	MVI M,EndProgram&0ffh ; will get overwritten by
 									 ; next token
 	SHLD PROG_PARSE_PTR
 	
@@ -979,26 +971,40 @@ GetLineNumLoop:
 	DCX B
 	; Now we want Z set if DE=(BC), clear
 	; otherwise 
+	
+ATNLN_RetNZ: ; shared code. Returns NZ if we know
+						 ; that A is non-zero
 	ORA L
 	
 	RET
 	
 
-ATNLN_Loop:
+AdvanceToNextLineNum:
+; BC is a pointer to somewhere in the program
+; move onto the next line number
+; return with Z set if successful
+; Z clear if fell off end of program
+
+	LDAX B
+	RST_CompareJump
+	DB EndProgram&0ffh,(ATNLN_RetNZ&0ffh)-1
+	; fell off end of program
 	
-	SUI LinenumToken
+	CPI LinenumSub&0ffh
 	RZ
 	
-	INR A
+	INX B
+	
 	RST_CompareJump
-	DB (IntegerToken-LinenumToken+1),(ATNLN_Int&0ffh)-1
-	CPI (StringToken-LinenumToken+1)
-	JNZ ATNLN_NotInt 
+	DB IntegerToken,(ATNLN_Int&0ffh)-1
+	CPI StringToken
+	JNZ AdvanceToNextLineNum
 	
 ATNLN_String:
-	INX B
 	LDAX B
+	DB 0c2h ; JNZ opcode skips 2 bytes
 ATNLN_Int:
+	MVI A,2
 	; Add A onto BC
 	ADD C
 	MOV C,A
@@ -1011,26 +1017,8 @@ ATNLN_Int:
 	ADC B
 	SUB C
 	MOV B,A
-	
-ATNLN_NotInt:
-	INX B
 
-AdvanceToNextLineNum:
-; BC is a pointer to somewhere in the program
-; move onto the next line number
-; return with Z set if successful
-; Z clear if fell off end of program
-
-	LDAX B
-	CPI EndProgram
-	JNZ ATNLN_Loop
-	
-	; fell off end of program
-	
-	INR A
-	; Z flag will be clear at this point
-
-	RET
+	JMP AdvanceToNextLineNum
 
 ; List statement main loop
 ListLoop:
@@ -1038,7 +1026,7 @@ ListLoop:
 	RST_PutChar
 	
 	LDAX B
-	CPI EndProgram
+	CPI EndProgram&0ffh
 	RZ
 	
   LXI H,ListLoop	; so that we can loop using RET
@@ -1052,7 +1040,7 @@ ListLoop:
 	DB StringToken,(List_String&0ffh)-1
 	RST_CompareJump
 	DB IntegerToken,(List_Integer&0ffh)-1
-  CPI LinenumToken
+  CPI LinenumSub&0ffh
   JNZ List_Token
   
 List_LineNum:
@@ -1200,6 +1188,11 @@ TokenList:
 	DB '/'+128
 	DB 255; 255 can only occur at the end
 
+LineNumSub:
+	INX B
+	INX B
+	RET
+	
 PrintSub:
 	LDAX B
 	RST_CompareJump
@@ -1306,8 +1299,17 @@ InputSub:
 	LDAX B
 	INX B
 	
-	JMP AssignToVar
+	;JMP AssignToVar
+	; use the fact that this is in page
+	; 3 to save a byte by having EndProgram
+	; as the last byte of this instruction
+	; which is the opcode for INX B
+	; and harmless in this comtext
 
+	DB 0c3h ; opcode for JMP
+	DB AssignToVar&0ffh
+EndProgram:
+	DB AssignToVar/256
 EndSub:
 	JMP Ready
 
@@ -1319,25 +1321,17 @@ ExecuteProgram: ; Depth = 0
 
 ExecuteProgramLoop:
 	; Check that we haven't reached end of program
+	; TODO can save 5 bytes by making this
+	; a sub before EndSub with NOP and
+	; fall through
 	LDAX B
-	CPI EndProgram
-	JZ Ready
-	
-	; Is it a line number?
-	CPI LinenumToken
-	JNZ ExecuteProgramNotLineNum
-	
-	INX B
-	INX B
-	INX B
-	LDAX B
-	
-ExecuteProgramNotLineNum:
+
+ExecuteDirect:
 	INX B
 
 	; Check that it is a keyword allowed in a
 	; program - expecting a carry here
-	CPI ExecuteProgrm&0ffh
+	CPI ExecuteProgram&0ffh
 	CNC Error
 	
 	; Put return address onto stack
