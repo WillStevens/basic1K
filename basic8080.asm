@@ -458,13 +458,8 @@ Error:
 	RST_NewLine
 	MVI A,'E'
 	RST_PutChar
-	POP PSW		; discard return address and
-						; get error code
-						; TODO this should be getting low
-						; byte, but A will have high byte
-	ANI 0fh
-	ADI 'A'
-	RST_PutChar
+	POP D
+	CALL PrintInteger
 	
 Ready:
 	; Set stack pointer to just below input buffer
@@ -1133,7 +1128,7 @@ List_Var:
 
 
 ; Index to subroutine address must not overlap with other token values
-ORG 02d9h
+ORG 02c2h
 
 TokenList:
 	DB PrintSub&0ffh
@@ -1222,10 +1217,20 @@ PrintSubEndTest:
 	RET
 
 LetSub:
-	; TODO test that we have var and equal sign
 	LDAX B
+	
+	; Test that we have a var
+	CPI 26
+	CNC Error
+	
 	PUSH PSW
 	INX B
+	
+	; Test that we have an equals sign
+	LDAX B
+	CPI EqualSub&0ffh
+	CNZ Error
+	
 	INX B
 	
 	RST_ExpEvaluate
@@ -1247,7 +1252,11 @@ AssignToVar:
 	
 GosubSub: ; Depth = 1
 	RST_ExpEvaluate
-	POP H	; Preserve return address
+	
+	LXI H,0a53ch ; Marker value
+	XTHL	; Preserve return address and put
+				; marker onto stack
+	
 	PUSH B
 	PUSH H
 	
@@ -1267,7 +1276,17 @@ ReturnSub:
 	
 	POP H	; Get return address first
 	POP B ; Get pointer to program loc to return to
-	PCHL
+	XTHL
+	
+	; compare HL with marker
+	MOV A,L
+	SBI 03ch
+	CNZ Error
+	MOV A,H
+	SBI 0a5h
+	CNZ Error
+	
+	RET
 
 IfSub:
 	RST_ExpEvaluate
@@ -1279,8 +1298,7 @@ IfSub:
 	JMP AdvanceToNextLineNum
 
 InputSub:
-	; TODO there is no check for var token
-	; nor for integer input
+	; TODO there is no check for integer input
 	
 	LXI H,INPUT_BUFFER
 	PUSH H
@@ -1297,6 +1315,11 @@ InputSub:
 	POP B
 	
 	LDAX B
+	
+	; check that it is a var
+	CPI 26
+	CNC Error
+	
 	INX B
 	
 	;JMP AssignToVar
@@ -1320,19 +1343,15 @@ ExecuteProgram: ; Depth = 0
 	LXI B,PROG_BASE+3
 
 ExecuteProgramLoop:
-	; Check that we haven't reached end of program
-	; TODO can save 5 bytes by making this
-	; a sub before EndSub with NOP and
-	; fall through
 	LDAX B
-
-ExecuteDirect:
-	INX B
 
 	; Check that it is a keyword allowed in a
 	; program - expecting a carry here
 	CPI ExecuteProgram&0ffh
 	CNC Error
+
+ExecuteDirect:
+	INX B
 	
 	; Put return address onto stack
 	LXI H,ExecuteProgramLoop
