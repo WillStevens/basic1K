@@ -84,19 +84,16 @@
 ;			syntax checking
 ; 2023-05-04 Free space: about 79 bytes
 ;			more code size reduction
-;			parrly through handling EndProgram
+;			partly through handling EndProgram
 ;			and LineNum better in threaded code
 ;			likely to have introduced bugs
-; 2023-05-07 Added more syntax checking
-;
-;
-; Memory map:
-; system vars
-; var space : 52 bytes
-; input buffer : 73 bytes
-; (also used as expression stack)
-; program area
-; stack area - top of RAM
+; 2023-05-07 Free space: about 69 bytes
+;			Improved expression evaluation by
+;			making it recursively callable
+;			and no longer requiring operator stack
+;			and about 20 bytes shorter.
+;			Used freed space for more syntax checks
+
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -107,20 +104,16 @@ RAM_TOP equ 0800h ; 1 more than top byte of RAM
 ; Token values
 ; 0-25 are variables
 
-IntegerToken equ 27 ; followed by 16-bit integer
-StringToken equ 26 ; followed by 1 byte length, followed by string characters
-CommaToken equ 28
+; IntegerToken must be one greater than last var
+IntegerToken equ 26 ; followed by 16-bit integer
+StringToken equ 27 ; followed by 1 byte length, followed by string characters
 
 ; Callable tokens are low byte of subroutine to call
 
-; Errors are display as Ex where x is a letter
-; Error code is the lowest 16 bits of the
-; address that called RST 4. If there is a
-; collision the shuffling subroutine might
-; resolve it.
+; Errors are display as Ex where x is an error
+; code which is tbe address on the stack when
+; Error subroutine is called.
 
-; Input buffer and operator stack can share the
-; same memory - not used at same time
 ; Input buffer must not be over a 256 byte 
 ; boundary
 ; Stack is just below input buffer to save code
@@ -129,12 +122,7 @@ CommaToken equ 28
 org RAM_TOP-(64+9)
 STACK_INIT:
 INPUT_BUFFER:
-OPERATOR_STACK_PTR: ; Lo byte must be B7
-										; or a similar opcode
-										; that doesn't do much
-	DW 0
-OPERATOR_STACK_BASE:
-	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 	DB 0,0,0,0,0,0,0,0,0
 
@@ -196,6 +184,8 @@ NewLine:
 	INX H
 	DB 0feh ; Opcode for CPI eats next byte
 	DB 11h ; Opcode LXI D eats next 2 bytes
+	
+ExpApplyOp: ; shared code
 	XTHL
 	RET
 	
@@ -278,12 +268,18 @@ ORG 38h
 
 ; BC points to program
 ; DE contains value
-; operator stack pointer stored in mem
-; in OPERATOR_STACK_PTR
-; Operand stack - SP
+; Stack is used for both operands and
+; operators
 
 ExpEvaluate:
-	LXI H,OPERATOR_STACK_BASE
+
+; This puts a marker on the stack to
+; detect when there are operators on the
+; stack - operators all have 3 as the hi byte
+; but this call puts hi byte 0 on the stack
+
+CALL ExpEvaluateNum
+RET
 
 ExpEvaluateNum:
 	; Expecting ( var integer or - sign
@@ -291,19 +287,16 @@ ExpEvaluateNum:
 	INX B
 	
 	RST_CompareJump
-	DB LeftBraceSub&0ffh,(ExpLeftBrace&0ffh)-1
-	RST_CompareJump
-	DB IntegerToken,(ExpInteger&0ffh)-1
+	DB LeftBraceToken&0ffh,(ExpLeftBrace&0ffh)-1
 	RST_CompareJump
 	DB SubSub&0xff,(ExpNegate&0ffh)-1
-	CPI 26
+	RST_CompareJump
+	DB IntegerToken,(ExpInteger&0ffh)-1
+	; Integer token is 26, so if carry is set then it is a var
 	CNC Error
 	
 	; Fall through to ExpVar
 ExpVar:
-	; Get var value into DE
-	PUSH H
-	
 	MVI H,VAR_SPACE/256
 	ADD A
 	MOV L,A
@@ -312,8 +305,6 @@ ExpVar:
 	INX H
 	MOV D,M
 	
-	POP H
-	
 	; fall through to ExpEvaluateOp
 	db 3eh ; opcode for MVI A eats next byte
 
@@ -321,69 +312,43 @@ ExpInteger:
 	RST_GetDEatBC
 	
 	; fall through to ExpEvaluateOp
-	db 3ah ; opcode for LDA eats 2 bytes
-				 ; and 3rd byte of instruction
-				 ; is RLC, so has no effect
-	
-ExpEvaluateOpRestore:
-	LHLD OPERATOR_STACK_PTR
 	
 ExpEvaluateOp:
 	;Expecting operator or right bracket or
 	;end of expression
 	
 	;Are there operators on the stack?
-	MOV A,L
-	DCX H	; decrement now in anticipation of
-				; needing to look at the top
-				; in a moment
+	POP H
+	
+	;H will be 0 if no operators on
+	; stack (i.e. high byte of return address)
+	
+	MOV A,H
 	RST_CompareJump
-	DB OPERATOR_STACK_BASE&0ffh,(SkipExpApplyOp&0ffh)-1
+	DB 0,(SkipExpApplyOp&0ffh)-1
 	
 	LDAX B
 	
-	CPI (RightBraceToken&0ffh)+1 ; operators or right bracket
-	; Is it the end of the expression or a right bracket
-	JC ExpApplyOp
+	; No longer needed since case below
+	; includes this
+	;CPI Operators&0ffh 
+	; Is it the end of the expression?
+	;JC ExpApplyOp
 	
-	; or does operator on stack have GTE precedence?
+	; Does operator on stack have GTE precedence? 
+	; (or end of expression, when A < operators)
 	DCR A
-	CMP M
+	CMP L
 	
-	JNC SkipExpApplyOp ; no, dont apply op
-
-ExpApplyOp:
-	; POP operator from stack
-	; this also handles the case when a
-	; left brace is encountered
-	
-	MOV A,M
-	; Store operator stack pointer, it
-	; will be restored on return from operator
-	SHLD OPERATOR_STACK_PTR
-	
-	; Put the address that we want to return to
-	; into HL. 
-	LXI H,ExpEvaluateOpRestore
-	XTHL	; exhange with operand
-	PUSH H	; put operand back onto stack
-	
-	; Address that we want to call into HL
-	MVI H,PrintSub/256
-	MOV L,A
-	
-	; Exchange with operand
-	XTHL
-	
-	; use RET to call it
- 	RET
+	JC ExpApplyOp ; yes, dont apply op
 	
 SkipExpApplyOp:
-	INX H	; undo the DCX that was done prior to jump
+	PUSH H		; put operator that was on stack
+						; back onto stack
 	
 	LDAX B
 	
-	CPI RightBraceToken&0ffh ; operators or right bracket
+	CPI Operators&0ffh ; operators or right bracket
 	; Is it the end of the expression?
 	RC
 	
@@ -391,31 +356,36 @@ SkipExpApplyOp:
 	
 	; The sequence below was shared with ExpNegate
 	; so use a CPI to mop up the initial
-	; LXI in ExpNegate, saving 5 bytes
-	
-	; Push onto the operator stack
-	;MOV M,A
-	;INX H
-	; move onto next token
-	;INX B
-	;because we are
-	;expecting another value, push DE onto stack
-	;PUSH D
-	;JMP ExpEvaluateNum
+	; LXI in ExpNegate
 	
 	DB 0feh ; OpCode for CPI to mop up LXI
 ExpNegate:
 	; Put 0 onto stack and - onto
 	; operator stack
 	LXI D,0
-	PUSH D
 	
-ExpLeftBrace:
-	; push it onto operator stack
-	MOV M,A
-	INX H
+	LXI H,ExpEvaluateOp ; address to return to
+											; after operator is called
+	PUSH H
+	
+	PUSH D							; operand
+
+	MOV L,A							; operator address
+	MVI H,PrintSub/256
+	PUSH H
 	
 	JMP ExpEvaluateNum
+	
+ExpLeftBrace:
+	RST_ExpEvaluate
+	
+	LDAX B
+	INX B
+	
+	RST_CompareJump
+	DB RightBraceToken&0ffh,(ExpEvaluateOp&0ffh)-1
+	
+	CALL Error
 
 ; This 9 byte routine must reside in page 0
 ; so that the last byte of a call to it is NOP
@@ -1168,7 +1138,7 @@ AssignToVar:
 	
 ; Index to subroutine address must not overlap with other token values
 ; So this must be 02CA or higher
-ORG 02cah
+ORG 02e0h
 
 TokenList:
 	DB PrintSub&0ffh
@@ -1196,9 +1166,8 @@ TokenList:
 	DB "NE",'W'+128
 	DB CommaToken
 	DB ','+128
-	DB LeftBraceSub&0ffh
+	DB LeftBraceToken&0ffh
 	DB '('+128
-;After this label, only expect things which count as operators
   DB RightBraceToken&0ffh
 	DB ')'+128
 	DB LTSub&0ffh
@@ -1331,6 +1300,12 @@ EndProgram:
 EndSub:
 	JMP Ready
 
+ListSub:
+  JMP ListSubImpl
+
+NewSub:
+	RST 0
+	
 ExecuteProgram:
 	
 	; Point BC to first line
@@ -1341,15 +1316,15 @@ ExecuteProgramLoop:
 	LDAX B
 
 	; Check that it is a token less than
-	; ExecuteProgram
-	CPI (ExecuteProgram)&0ffh
+	; ListSub
+	CPI (ListSub)&0ffh
 	CNC Error
 	
 ExecuteDirect:
 
 	; Check that it is a token between
-	; LinenumSub and NewSub
-	CPI (NewSub+1)&0ffh
+	; LinenumSub and ExecuteProgram
+	CPI (ExecuteProgram+1)&0ffh
 	CNC Error
 
 	CPI LineNumSub&0ffh
@@ -1359,41 +1334,25 @@ ExecuteDirect:
 	
 	; Put return address onto stack
 	LXI H,ExecuteProgramLoop
+
+; ( ) , tokens must have values between keywords
+; and operators
+LeftBraceToken:
 	PUSH H
 	
+RightBraceToken:
 	; Put pointer to call address into HL
 	MOV L,A
 	; ExecuteProgramLoop must be on the same page
 	; page as PrintSub so that we don't have to
 	; update H
 	
+CommaToken:
 	; Jump to it
 	PCHL
-
-ListSub:
-  JMP ListSubImpl
-
-NewSub:
-	RST 0
 	
-LeftBraceSub:
-	LDAX B
-	; Is current operator a right brace?
-	CPI RightBraceToken&0ffh
-	CNZ Error ; expecting right brace
-	INX B
-	
-; This is a dummy label that is never called
-; to make sure that right brace token value is between LeftBraceSub and GTSub
-RightBraceToken:
-
-	; Because tbis operator doesn't consume an
-	; operand, the thing in HL isn't an
-	; operand and needs to be exchanged with
-	; the return address on the stack
-
-	XTHL	; exchange with return address
-	PCHL	; jump to return address
+; Token values >= this are all operators
+Operators:
 
 GTSub:
 	; Swap operands and fall through
