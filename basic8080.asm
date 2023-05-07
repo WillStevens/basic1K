@@ -87,6 +87,8 @@
 ;			parrly through handling EndProgram
 ;			and LineNum better in threaded code
 ;			likely to have introduced bugs
+; 2023-05-07 Added more syntax checking
+;
 ;
 ; Memory map:
 ; system vars
@@ -216,7 +218,8 @@ PutChar:
 	OUT 0
 	RET
 
-; Space for 5 byte subroutine(s)
+; Space for 5 bytes - likely to need for
+; any real implementation of PutChar
 
 .macro RST_GetDEatBC
 RST 4
@@ -1015,7 +1018,9 @@ ATNLN_Int:
 
 	JMP AdvanceToNextLineNum
 
-; List statement main loop
+; List statement implementation
+ListSubImpl:
+	LXI B,PROG_BASE
 ListLoop:
 	MVI A,' '
 	RST_PutChar
@@ -1126,9 +1131,44 @@ List_Var:
   RST_PutChar
   RET
 
-
+; To large to fit after TokenList
+LetSubImpl:
+	LDAX B
+	
+	PUSH PSW
+	INX B
+	
+	; Test that we have an equals sign
+	LDAX B
+	CPI EqualSub&0ffh
+	CNZ Error
+	
+	INX B
+	
+	RST_ExpEvaluate
+	
+	POP PSW
+	
+AssignToVar:
+	; Put DE into var
+	
+	; Test that we have a var
+	CPI 26
+	CNC Error
+	
+	MVI H,VAR_SPACE/256
+	ADD A
+	MOV L,A
+	
+	MOV M,E
+	INX H
+	MOV M,D
+	
+	RET
+	
 ; Index to subroutine address must not overlap with other token values
-ORG 02c2h
+; So this must be 02CA or higher
+ORG 02cah
 
 TokenList:
 	DB PrintSub&0ffh
@@ -1187,7 +1227,9 @@ LineNumSub:
 	INX B
 	INX B
 	RET
-	
+
+PrintSubLoop:
+	INX B
 PrintSub:
 	LDAX B
 	RST_CompareJump
@@ -1207,56 +1249,20 @@ PrintStringToken:
 
 PrintSubEndTest:
 	LDAX B
-	INX B
 	
 	RST_CompareJump
-	DB CommaToken,(PrintSub&0ffh)-1
+	DB CommaToken,(PrintSubLoop&0ffh)-1
 	
-	DCX B
 	RST_NewLine
 	RET
 
 LetSub:
-	LDAX B
-	
-	; Test that we have a var
-	CPI 26
-	CNC Error
-	
-	PUSH PSW
-	INX B
-	
-	; Test that we have an equals sign
-	LDAX B
-	CPI EqualSub&0ffh
-	CNZ Error
-	
-	INX B
-	
-	RST_ExpEvaluate
-	
-	POP PSW
-	
-AssignToVar:
-	; Put DE into var
-	
-	MVI H,VAR_SPACE/256
-	ADD A
-	MOV L,A
-	
-	MOV M,E
-	INX H
-	MOV M,D
-	
-	RET
+	JMP LetSubImpl
 	
 GosubSub: ; Depth = 1
 	RST_ExpEvaluate
 	
-	LXI H,0a53ch ; Marker value
-	XTHL	; Preserve return address and put
-				; marker onto stack
-	
+	POP H
 	PUSH B
 	PUSH H
 	
@@ -1268,23 +1274,16 @@ GotoSub:
 	CALL Error
 	
 ReturnSub:
-	;TODO - how to always detect
-	; return without GOSUB
-	; could put marker word onto stack?
-	; and inc/dec every call/return
-	; and check for marker march
 	
 	POP H	; Get return address first
 	POP B ; Get pointer to program loc to return to
-	XTHL
+	PUSH H
 	
-	; compare HL with marker
-	MOV A,L
-	SBI 03ch
-	CNZ Error
-	MOV A,H
-	SBI 0a5h
-	CNZ Error
+	; Expect stack size to be 4 or more
+	; any less and we have return without gosub
+	LXI H,-(STACK_INIT-4)-1
+	DAD SP
+	CC Error
 	
 	RET
 
@@ -1316,10 +1315,6 @@ InputSub:
 	
 	LDAX B
 	
-	; check that it is a var
-	CPI 26
-	CNC Error
-	
 	INX B
 	
 	;JMP AssignToVar
@@ -1336,7 +1331,7 @@ EndProgram:
 EndSub:
 	JMP Ready
 
-ExecuteProgram: ; Depth = 0
+ExecuteProgram:
 	
 	; Point BC to first line
 	; Skip over the line number
@@ -1345,12 +1340,21 @@ ExecuteProgram: ; Depth = 0
 ExecuteProgramLoop:
 	LDAX B
 
-	; Check that it is a keyword allowed in a
-	; program - expecting a carry here
-	CPI ExecuteProgram&0ffh
+	; Check that it is a token less than
+	; ExecuteProgram
+	CPI (ExecuteProgram)&0ffh
+	CNC Error
+	
+ExecuteDirect:
+
+	; Check that it is a token between
+	; LinenumSub and NewSub
+	CPI (NewSub+1)&0ffh
 	CNC Error
 
-ExecuteDirect:
+	CPI LineNumSub&0ffh
+	CC Error
+	
 	INX B
 	
 	; Put return address onto stack
@@ -1367,8 +1371,7 @@ ExecuteDirect:
 	PCHL
 
 ListSub:
-  LXI B,PROG_BASE
-  JMP ListLoop
+  JMP ListSubImpl
 
 NewSub:
 	RST 0
