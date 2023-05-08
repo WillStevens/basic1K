@@ -1105,7 +1105,8 @@ GetVarLocation:
 ; A should contain a var token
 ; and B points to tbe location after
 ; the var token
-; return with B pointing to next char
+; return with var address in HL
+; and B pointing to next char
 
 	; Test that we have a var
 	CPI 27
@@ -1140,6 +1141,7 @@ GetVarLocation:
 ; To large to fit after TokenList
 LetSubImpl:
 	LDAX B
+	INX B
 	
 	CALL GetVarLocation
 	PUSH H
