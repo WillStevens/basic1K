@@ -93,7 +93,8 @@
 ;			and no longer requiring operator stack
 ;			and about 20 bytes shorter.
 ;			Used freed space for more syntax checks
-
+; 2023-05-08 Free space: about 44 bytes
+;			First draft of support for array var @
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -102,11 +103,11 @@
 RAM_TOP equ 0800h ; 1 more than top byte of RAM
 
 ; Token values
-; 0-25 are variables
+; 0-26 are variables (0 = @)
 
 ; IntegerToken must be one greater than last var
-IntegerToken equ 26 ; followed by 16-bit integer
-StringToken equ 27 ; followed by 1 byte length, followed by string characters
+IntegerToken equ 27 ; followed by 16-bit integer
+StringToken equ 28 ; followed by 1 byte length, followed by string characters
 
 ; Callable tokens are low byte of subroutine to call
 
@@ -133,7 +134,7 @@ ORG 0400h
 ; this must be on a 256 byte boundary
 VAR_SPACE:
 	DW 0,0,0,0,0,0,0,0,0,0,0,0,0
-	DW 0,0,0,0,0,0,0,0,0,0,0,0,0
+	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0
 	
 PROG_PTR:
 	DW 0
@@ -292,15 +293,14 @@ ExpEvaluateNum:
 	DB SubSub&0xff,(ExpNegate&0ffh)-1
 	RST_CompareJump
 	DB IntegerToken,(ExpInteger&0ffh)-1
-	; Integer token is 26, so if carry is set then it is a var
+	; Integer token is 27, so if carry is set then it is a var
 	CNC Error
-	
+
 	; Fall through to ExpVar
 ExpVar:
-	MVI H,VAR_SPACE/256
-	ADD A
-	MOV L,A
+	CALL GetVarLocation
 	
+ExpVarGetValue:
 	MOV E,M
 	INX H
 	MOV D,M
@@ -354,7 +354,7 @@ SkipExpApplyOp:
 	
 	INX B
 	
-	; The sequence below was shared with ExpNegate
+	; Code shared with ExpNegate
 	; so use a CPI to mop up the initial
 	; LXI in ExpNegate
 	
@@ -386,7 +386,7 @@ ExpLeftBrace:
 	DB RightBraceToken&0ffh,(ExpEvaluateOp&0ffh)-1
 	
 	CALL Error
-
+	
 ; This 9 byte routine must reside in page 0
 ; so that the last byte of a call to it is NOP
 OutputString:
@@ -713,7 +713,7 @@ DiffClass:
 	DB '"',(String&0ffh)-1
 	
 	LDAX D
-	SUI 'A'+128	; if hi bit is set then length=1
+	SUI '@'+128	; if hi bit is set then length=1
 	JNC Var			; and it must be a var
 	
 NotVar:
@@ -1091,22 +1091,58 @@ List_String:
 	MVI A,34
 	RST_PutChar
 	CALL OutputString
-	MVI A,34-'A'
+	MVI A,34-'@'
 	DB 11h ; opcode for LXI D to eat next 2 bytes
 
 List_Var:
   LDAX B
   INX B
-  ADI 'A'
+  ADI '@'
   RST_PutChar
   RET
 
+GetVarLocation:
+; A should contain a var token
+; and B points to tbe location after
+; the var token
+; return with B pointing to next char
+
+	; Test that we have a var
+	CPI 27
+	CNC Error
+	
+	MVI H,VAR_SPACE/256
+	ADD A
+	MOV L,A
+	
+	RNZ
+	
+	; fall through if it is array var
+	
+	LDAX B
+	INX B
+	CPI LeftBraceToken&0ffh
+	CNZ Error
+	RST_ExpEvaluate
+	INX B
+	CPI RightBraceToken&0ffh
+	CNZ Error
+	
+	; Now DE contains the array index
+	; Add it twice to get the offset
+	
+	LHLD PROG_PARSE_PTR
+	DAD D
+	DAD D
+	
+	RET
+	
 ; To large to fit after TokenList
 LetSubImpl:
 	LDAX B
 	
-	PUSH PSW
-	INX B
+	CALL GetVarLocation
+	PUSH H
 	
 	; Test that we have an equals sign
 	LDAX B
@@ -1117,18 +1153,10 @@ LetSubImpl:
 	
 	RST_ExpEvaluate
 	
-	POP PSW
+	POP H
 	
 AssignToVar:
-	; Put DE into var
-	
-	; Test that we have a var
-	CPI 26
-	CNC Error
-	
-	MVI H,VAR_SPACE/256
-	ADD A
-	MOV L,A
+	; Put DE into var (HL)
 	
 	MOV M,E
 	INX H
@@ -1285,6 +1313,8 @@ InputSub:
 	LDAX B
 	
 	INX B
+	
+	CALL GetVarLocation
 	
 	;JMP AssignToVar
 	; use the fact that this is in page
