@@ -8,18 +8,25 @@
 ; HL contains the address of subroutine to call
 ; for current char class 
 ;
-; BC is used to store state information about
-; the token currently being parsed
+; BC is used for parse state
 
 org 0400h
 
 PROG_PARSE_PTR:
 	DW PROG_BASE
+PARSE_STATE:
+	DW 0
 PROG_BASE:
 
 org 0000h
-
+	
 GetLine:
+
+	LHLD PROG_PARSE_PTR
+	PUSH H ; now we can use XTHL to get 
+				 ; PROG_PARSE_PTR
+
+FreshStart:
 
   LXI H,NoCharClass
 
@@ -30,30 +37,24 @@ NextCharLoop:
 	ANI 1
 	JZ NextCharLoop
 	IN 0
-  
-	PUSH PSW
+	
+	MOV D,A
 	
   ; Do we have the same class as before?
   CALL CharClass
-  CALL CompareHLDE
-  ; Z,C if it is the same class, NZ,NC otherwise
-
+  ; are L and E equal?
+  MOV A,L
+  XRA E
+  ; Z if they are equal, NZ if not
+  
   PCHL ; Jump based on previous CharClass pointer 
-
-NoCharClass:
-  XCHG ; Put new class into HL
-  LXI B,0 ; reset state information
-  PCHL
 
 DigitClass:
   JNZ DigitClassEnd
-
-  POP PSW
  
   ; Accumulate the value into B
-	
+	XCHG ; presevre HL
 	; Muliply by 10
-	XCHG 	; preserve HL in DE
 	MOV H,B
 	MOV L,C
 	
@@ -64,104 +65,152 @@ DigitClass:
 	
 	; Add in the new digit
 	ANI 0fh
-	
+
 	MVI B,0
-	MOV C,A
-	DAD B 
+	MOV C,D
+	DAD B
 	
 	MOV B,H
 	MOV C,L
 	
-	XCHG ; Get HL back
+	XCHG ; get back HL
+	
   JMP NextCharLoop
 
 DigitClassEnd:
-
   ; Write token into program
   ; need to preserve DE, don't care about HL
   
-  LHLD PROG_PARSE_PTR
-  MVI M,27 ; IntegerToken
+  XTHL
+  MVI M,28
   INX H
   MOV M,C
   INX H
-WriteToken:
+Write_Shared:
   MOV M,B
   INX H
-  SHLD PROG_PARSE_PTR
+  XTHL
 
-  JMP NoCharClass
+NoCharClass:
+  MOV L,E
+  XRA A ; set Z
+  MOV B,A ; reset state information
+  MOV C,A
 
-AlphaClass:
-	JNZ AlphaClassEnd
+  PCHL
+  
+QuoteClassExpEnd:
+	
+	; update the length
+	
+	POP H
+	PUSH H ; preserve original value
+	DAD B
+	MOV M,C ; put in -ve length
+	
+	DCX B
+
+	XTHL
+	
+	; Z is not set, so skip over 2 chars using JZ opcode. 27 is the opcode for DCX D, so
+	; this will affect E only and not D
+	DB 0cah
+	
+QuoteClass:
+	; first time through Z is set and A is zero
+	; on fall through Z is not set and A 
+	; equal to XOR of lo bytes if char is a quote
+	
+	XTHL
+	MVI M,27
+	INX H
+	MOV M,D
+	XTHL
+	
+	MVI L,QuoteClassExpEnd&0ffh
+	
+	; will be 3 bytes 
+	CPI (QuoteClass^QuoteClassExpEnd) & 0ffh
+	JZ FreshStart
+	
+	JMP NextCharLoop
+	
+LT0Class:
+	INX H	; make sure that succesive LT0Class
+				; chars count as separate tokens
+	NOP
 CompClass:
 	NOP
-LT0Class:
-	JNZ TokenClassEnd
+	; If the relative position of CompClass and 
+	; AlphaClass change then change CharClass
+AlphaClass:
 	
-	POP PSW
-	
-	XCHG
-	LHLD PROG_PARSE_PTR
+	XTHL
+	PUSH H
 	DAD B
-	MOV M,A
-	XCHG
+	MOV M,D
+	POP H
+	XTHL
+	
+	; if NZ then we will just
+	; have written a different class char:
+	; good, this ensures no spurious
+	; strcmp matches
+	JNZ TokenClassEnd 
 	
 	INX B ; increase count of number of characters
 	
 	JMP NextCharLoop
 
-AlphaClassEnd:
-	; If BC=1 then it's a var
-	DCX B
-	JZ VarToken
-	
-	; otherwise fall through and look up the token
-
 TokenClassEnd:
-	; Need to preserve DE, don't care about HL
-	PUSH D
-	LHLD PROG_PARSE_PTR
-	; set the high bit of the last char 
-	DAD B
-	MOV A,M
-	ORI 080h
-	MOV M,A
 	
-	XCHG ; put start of token into D
-	LXI H,TokenList
+	LXI D,TokenList
 	
 LookupToken:
 
 	MOV B,M ; B contains the token value
 					; if we get a match
 	
-	PUSH D
-	CM StrcmpEntry
-	POP D
+	PUSH H
+	CM Strcmp
+	POP H
 
 	JZ FoundToken
 
-	MOV A,M
+	LDAX D
+	
 	INR A
-	INX H
+	INX D
   JNZ LookupToken
-	CALL Error
+  
+  ; didn't find it, check whether it is a var
+	
+	; If C=1 it might be a var
+	DCR C
+	JNZ Error
+
+	XTHL 
+	MOV A,M
+	SBI '@'
+	JC Error
+	
+	MOV B,A
+	XTHL
+	
+	; fall through
 	
 FoundToken:
-	POP D
-	LHLD PROG_PARSE_PTR
-	JMP WriteToken
+	XTHL
 	
-StrcmpEntry:
-	INX H
+	JMP Write_Shared
 	
 ; DE points to hi-bit terminated string
-; HL points to hi-bit terminated string
+; HL points to string
 ; Returns Z set if match
 ; Can't have 128 as a character in D
 ; (so assume that strings must be ASCII)
-Strcmp: ; Depth = 3
+Strcmp: 
+	INX D
 	LDAX D
 	CMP M
 	RNZ	; On return Z will be clear
@@ -170,27 +219,10 @@ Strcmp: ; Depth = 3
 	ANI 128
 	RZ	; On return Z will be set 
 	
-	INX D
 	INX H
 	JMP Strcmp
-	
-	JMP NoCharClass
 
-VarToken:
-	; The char at PROG_PARSE_PTR - 1 is a var name
-	; need to preserve DE, don't care about HL
-	
-	LHLD PROG_PARSE_PTR
-	DCX H
-	
-	MOV A,M
-	SBI '@'
-	MOV M,A
-	
-	INX H
-	SHLD PROG_PARSE_PTR
-	
-	JMP NoCharClass
+
 	
 CharClass:
 ; each character less than 0 is a
@@ -198,33 +230,27 @@ CharClass:
 ; 0-9 is a class (class C)
 ; : to > is a class (class 8)
 ; >= @ is a class (class 9)
-        LXI D,LT0Class
-CPI '0'
-RC
+	MVI E,FreshStart&0ffh
+	CPI ' '
+	RZ
+	
+	MVI E,QuoteClass&0ffh
+	CPI 34
+	RZ
+	
+	MVI E,LT0Class&0ffh
+	CPI '0'
+	RC
 
-        LXI D,DigitClass
-CPI '9'+1
-        RC
+	MVI E,DigitClass&0ffh
+	CPI '9'+1
+	RC
 
-        LXI D,CompClass
-CPI '@'
-RC
+	MVI E,CompClass&0ffh
+	CPI '@'
+	RC
 
-LXI D,AlphaClass
-RET
-
-CompareHLDE:
-; compare HL and DE, return
-; Z equal, NZ if not equal
-; C equal, NC if not equal
-; A will be zero if Z is set
-	MOV A,L
-	XRA E
-	RNZ
-	MOV A,H
-	XRA D
-	RNZ
-	STC
+	INR E
 	RET
 
 Error:
