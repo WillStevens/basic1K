@@ -165,12 +165,14 @@ TokenClassEnd:
 	
 	XTHL
 	DAD D
-	
+
 LookupToken_Loop:
-StrCmp:
-	PUSH H
 	LDAX B
+	MOV D,A
+	PUSH H
+StrCmp:
 	INX B
+	LDAX B
 	XRA M
 	; iff match then A is either 00h or 80h
 	; (80h if last char)
@@ -184,37 +186,31 @@ StrCmp:
 	POP H
 	
 	JZ Write_Shared
-
+	
 LookupToken:
 	LDAX B
-	MOV D,A
 	INR A
 	INX B
   JM LookupToken_Loop
   JNZ LookupToken
-  
-  ; didn't find it, check whether it is a var
 	
-	; If E=2 it might be a var
-	DCR E
-	DCR E
-	JNZ Error
+  ; didn't find it, check whether it is a var
+  
+  ; it's a var if bits 7,6,5 are 010 and
+  ; E=2
 
 	MOV A,M
-	SBI '@'
-	JC Error
-	
 	MOV D,A
+	ANI 0e0h
+	ORA E
 	
-	JMP Write_Shared
+	; TODO will be 3 bytes
+	CPI 42h
+	JZ Write_Shared
 	
-; HL points to string
-; BC points to string
-; One of them mist be hi-bit terminated
-; Returns Z set if match
-; Can't have 128 as a character in D
-; (so assume that strings must be ASCII)
-
+Error:
+	JMP Error
+	
 ; 27 bytes for 6 classes - can it be simplified?
 ; bit 6 set : alpha
 ; bit 5 and 4 set:
@@ -279,8 +275,7 @@ CharClass:
 	INR C
 	RET
 
-Error:
-	JMP Error
+
 	
 org 0300h
 
