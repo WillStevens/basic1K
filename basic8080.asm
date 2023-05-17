@@ -95,6 +95,16 @@
 ;			Used freed space for more syntax checks
 ; 2023-05-08 Free space: about 44 bytes
 ;			First draft of support for array var @
+; 2023-05-17 Free space: About 100 bytes
+;			First draft of new parser from
+;			experiments/parsing3.asm.
+;			Still need to modify string representation
+;			and change how INPUT parses integer,
+;			and check string token doesn't interfere
+;			after TokenList, and check order in
+;			TokenList.
+;			Seems likely that enough space has been
+;			freed to be able to implement FOR...NEXT
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -120,14 +130,8 @@ StringToken equ 28 ; followed by 1 byte length, followed by string characters
 ; Stack is just below input buffer to save code
 ; when initialising
 
-org RAM_TOP-(64+9)
+org RAM_TOP
 STACK_INIT:
-INPUT_BUFFER:
-	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-	DB 0,0,0,0,0,0,0,0,0
-
-INPUT_BUFFER_END:
 
 ORG 0400h
 
@@ -416,22 +420,7 @@ OutputString_Loop:
 	
 	JMP OutputString_Loop
 	
-GetLine:
-	IN 1
-	ANI 1
-	JZ GetLine
-	IN 0
-	
-	MOV M,A
-	CPI 10
-	RZ
-	
-	INX H
-	MOV A,L
-	CPI INPUT_BUFFER_END&0ffh
-	JNZ GetLine
-	
-	; Fall through to Error
+
 
 ;Display error code and go back to line entry
 Error:
@@ -442,30 +431,24 @@ Error:
 	CALL PrintInteger
 	
 Ready:
-	; Set stack pointer to just below input buffer
+	; Set stack pointer
 	; Do this every time to guard against
 	; GOSUB with no RETURN errors
 	
-	LXI H,INPUT_BUFFER
+	LXI H,STACK_INIT
 	SPHL
-	; H is also the initial pointer to input buffer
-	PUSH H
 	
 	RST_NewLine
-	CALL Getline
 	
 	LHLD PROG_PTR
-	SHLD PROG_PARSE_PTR
-	
-	; Now we have a line terminated by chr(10)
-	; Get location of input buffer into HL
-	; and put PROG_PTR onto stack because
-	; we will needed it after parsing
-	XTHL
+	PUSH H
+	PUSH H
 
-	CALL NextToken
+	CALL GetLine
 	
 	POP H ; get PROG_PTR back
+	SHLD PROG_PARSE_PTR
+	POP H
 	
 	MOV A,M
 	; Regardless of which branch taken
@@ -650,266 +633,226 @@ MR_Loop:
 
 	JMP MR_CompareBC_atSP
 
-;NextToken, Integer, String
-;all need to be on the same page
-; (currently all on page 1)
-NextToken: ; Depth = 1
-	; Get class of first char
-	MOV A,M
-	CPI 10
-	RZ
-	CALL CharClass
+GetLine:
+
+	LHLD PROG_PARSE_PTR
+	PUSH H ; now we can use XTHL to get 
+				 ; PROG_PARSE_PTR
+
+FreshStart:
+
+  LXI H,NoCharClass
+	
+NLTest:
+	MVI A,10	; check for newline
+	CMP B
+	RZ				; return if found
+
+	MOV B,H
+	
+NextCharLoop:
+
+	IN 1
+	ANI 1
+	JZ NextCharLoop
+	IN 0
+	
 	MOV B,A
 	
-	; Copy HL to DE so that DE points to start
-	PUSH H
-	POP D
-	
-	INX H
-	
-NextChar:
-	; Are we in a string
-	MOV A,B
-	CPI '"'
-	JNZ NotInString
-	
-	; If yes then is M a chr(10) or quote
-	MOV A,M
-	INX H
-	CPI 10
-	JZ Error
-	CPI '"'
-	JNZ NextChar
-	
-	; Otherwise fall through and whole string will be handled
-	
-NotInString:
-	; Is M a different class from B, or
-	; a char that can't belong to a sequence
-	MOV A,M
-	CALL CharClass
-	
-	CMP B
-	JNZ DiffClass
-	ANI 80h
-	JZ DiffClass
-	
-	INX H
-	JMP NextChar
+  ; Do we have the same class as before?
+  PUSH H
+	MVI L,(ClassLookup&0ffh)-1
+	LookupClassLoop:
+	INR L
+	CMP M
+	INR L
+	JC LookupClassLoop
+	MOV C,M
+	POP H
+  ; are L and C equal?
+  MOV A,L
+  XRA C
+  ; Z if they are equal, NZ if not
+  
+  PCHL ; Jump based on previous CharClass pointer 
 
-; If we reach this point then contents of buffer from DE to HL-1 are a token. C is the length
-; If it is an integer then calculate value
-; Otherwise lookup the token
-DiffClass:
-	; Set the hi bit of the last char in the token
-	DCX H
-	MOV A,M
-	ORI 128
-	MOV M,A
-	INX H
+DigitClass:
+  JNZ DigitClassEnd
+ 
+ 	PUSH H
+  ; A is zero at this point
+  
+  ; Accumulate the value into D
+
+	; Muliply by 10
+	MOV H,D
+	MOV L,E
 	
+	DAD H
+	DAD H
+	DAD D
+	DAD H
+	
+	; Add in the new digit
+	
+	MOV D,A
 	MOV A,B
+	ANI 0fh
+	MOV E,A
+	DAD D
 	
-	; These all need to be on the same page
-	; as this block
-	RST_CompareJump
-	DB ' ',(NextToken&0ffh)-1
-	RST_CompareJump
-	DB 0c0h,(Integer&0ffh)-1
-	RST_CompareJump
-	DB '"',(String&0ffh)-1
-	
-	LDAX D
-	SUI '@'+128	; if hi bit is set then length=1
-	JNC Var			; and it must be a var
-	
-NotVar:
-	PUSH H
-	
-	LXI H,TokenList
-	CALL LookupToken ; M is set because of SUI
-	
-	; C contains the token value
-	MOV A,C
-	
-	DB 21h ; opcode of LXI H to skip 2 bytes
-	
-Var:
-	; DE points to the single-char varname, so inc to get a pointer to the next char to look at and put on stack to get back after updating PROG_PARSE_PTR
-	
-	INX D
-	PUSH D
-	
-	; Store token in program
-	LHLD PROG_PARSE_PTR
-	MOV M,A
-Var_Share_Entry:
-	INX H
-Var_Share_Entry2:
-	MVI M,EndProgram&0ffh ; will get overwritten by
-									 ; next token
-	SHLD PROG_PARSE_PTR
+	XCHG
 	
 	POP H
 	
-	JMP NextToken
+  JMP NextCharLoop
 
-Integer:
-	CALL ParseInteger
+DigitClassEnd:
+  ; Write token into program
+  ; need to preserve DE, don't care about HL
+  
+  XTHL
+  MVI M,28
+  INX H
+  MOV M,E
+  INX H
+Write_Shared:
+  MOV M,D
+  INX H
+  XTHL
+
+NoCharClass:
+  MOV L,C
+  XRA A ; set Z
+  MOV D,A ; reset state information
+  MOV E,A
+
+  PCHL
+  
+QuoteClassExpEnd:
 	
-	; At this point DE contains the integer
-	; HL points to tbe char after end of token
+	; if C=QuoteClass&0ffh then NZ
+	MVI A,QuoteClass&0ffh
+	SUB C
 	
-	PUSH H
+	; wanted to do this, but no bitwise xor in 
+	; ASM80
+	;SBI (QuoteClass^QuoteClassExpEnd) & 0ffh
 	
-	; Store integer in program
-	LHLD PROG_PARSE_PTR
-	MVI M,IntegerToken
+	; somehow invert Z
+	SBI 1 ; iff it was zero will C be set
+	SBB A ; iff it was zero will it
+				; now be non-zero
+	
+QuoteClass:
+	; first time through Z is set and A is zero
+	; on fall through Z is set unless its the last quote
+	MVI L,(QuoteClassExpEnd&0ffh)-1
+	
+LT0Class:
 	INX H
-	MOV M,E	; TODO code in common with var assign
+	NOP
+	
+CompClass:
+	NOP
+AlphaClass:
+	
+	XTHL
+	MOV M,B
 	INX H
-	MOV M,D
-
-	JMP Var_Share_Entry
-
-; DE points to first double quote
-; HL-1 is last double quote
-String:
-	INR E
+	XTHL
+	
+	DCX D ; increase char count
+	
+	; if NZ then we will just
+	; have written a different class char:
+	; good, this ensures no spurious
+	; strcmp matches
+	
+	; now we nerd to decide whether to jump to:
+	; FreshStart - if its the last quote in
+	;							 a string
+	; NLTest		 - if part way through string or 
+	;								token
+	; TokenClassEnd - if end of token
+	
+	JZ NLTest
+	
 	MOV A,L
-	SUB E
-	DCR A
-	;A contains the length, Z set if zero length
+	; will be 3 bytes
+	CPI QuoteClassExpEnd&0ffh
+	JZ FreshStart
 	
-	PUSH H
-	
-	;Store token ID, length and string
-	LHLD PROG_PARSE_PTR
-	MVI M,StringToken
-	INX H
-	MOV M,A
-	INX H
-	CNZ StrCpy ; only call if not zero length
-	JMP Var_Share_Entry2
-	
-ParseInteger:
-	; DE points to integer
-	; The integer will be constructed in HL
-	; on return DE points to char after int
+TokenClassEnd:
 
-	LXI H,0
+	XTHL
+	DAD D
 	
-ParseIntegerNext:
-	; Muliply by 10
-	PUSH H
-	POP B
-	
-	DAD H
-	DAD H
-	DAD B
-	DAD H
-
-	LDAX D
-	
-	ANI 0fh
-	
-	MVI B,0
-	MOV C,A
-	DAD B
-	
-	LDAX D ; test hi bit
-	ORA A
-	
-	INX D
-	JP ParseIntegerNext
-	
-	XCHG  ; both places where this is called from
-				; require XCHG
-	
-	RET
-
-; DE points to start of token
-; HL points 1 char after
-; C contains the token value
-LookupToken:
-
-	MOV C,M	
-	
-	PUSH D
-	CM StrcmpEntry
-	POP D
-
-	RZ 
+	; it's a var if bits 7,6,5 are 010 and
+  ; E=-2
 
 	MOV A,M
+	XRI 040h
+	MOV D,A
+	ANI 0e0h
+	XRA E
+	
+	; TODO will be 3 bytes
+	CPI 0feh
+	JZ Write_Shared
+	
+	LXI D,TokenList
+
+LookupToken_Loop:
+	LDAX D
+	MOV B,A
+	PUSH H
+StrCmp:
+	INX D
+	LDAX D
+	XRA M
+	; iff match then A is either 00h or 80h
+	; (80h if last char)
+	INX H
+	JZ Strcmp ; match and not last char
+	
+	; equal to 080h iff match and last char
+	XRI 080h
+	; equal to Z iff match and last char
+
+	POP H
+	
+	MOV D,B
+	
+	JZ Write_Shared
+	
+LookupToken:
+	LDAX D
 	INR A
-	INX H
+	INX D
+  JM LookupToken_Loop
   JNZ LookupToken
-	CALL Error
-
-StrcmpEntry:
-	INX H
 	
-; DE points to hi-bit terminated string
-; HL points to hi-bit terminated string
-; Returns Z set if match
-; Can't have 128 as a character in D
-; (so assume that strings must be ASCII)
-Strcmp: ; Depth = 3
-	LDAX D
-	CMP M
-	RNZ	; On return Z will be clear
+  ; didn't find it
 	
-	CMA
-	ANI 128
-	RZ	; On return Z will be set 
-	
-	INX D
-	INX H
-	JMP Strcmp
+Error1:
+	JMP Error1
 
-; DE points to start
-; HL points to dest
-; Use hi-bit to detect end, which will be quote
-; so don't copy it
-; StrCpy doesn't get called for zero length
+; TODO
+; alphaclass, compclass and lt0class can
+; all be combined, ans call LookupToken
+; after every char
+; requires changes to lookup routine to
+; take account of coming to end of buffer
+ClassLookup:
+DB 64,AlphaClass&0ffh
+DB 58,CompClass&0ffh
+DB 48,DigitClass&0ffh
+DB 35,LT0Class&0ffh
+DB 34,QuoteClass&0ffh
+DB 33,LT0Class&0ffh
+DB 0,FreshStart&0ffh
 
-; Leaves HL pointing to char after string
-StrCpy:
-	LDAX D
-	ORA A
-	RM
-	MOV M,A
-
-	INX D
-	INX H
-	
-	JMP Strcpy
-
-; Return the class of a character for tokenizing
-; Digit
-; Alphabetical
-; All others are distinct classes
-
-CharClass:
-; each character less than 0 is a 
-; distinct class.
-; 0-9 is a class (class C)
-; : to > is a class (class 8)
-; >= @ is a class (class 9)
-	CPI '0'
-	RC	 			; LT '0' then return
-	CPI '9'+1
-	RAR
-	STC
-	RAR
-	ANI 0f0h ; top 4 bits give the class
-					 ; hi bit must be set to signify that
-					 ; these are characters that group
-					 ; together
-	
-	RET
-	
 GetLineNum:
 	; Line number is in DE, look it up in the program and set BC to the line num token
 	; preserves DE
@@ -1313,8 +1256,8 @@ IfSub:
 InputSub:
 	; TODO there is no check for integer input
 	
-	LXI H,INPUT_BUFFER
-	PUSH H
+	;LXI H,INPUT_BUFFER
+	;PUSH H
 	CALL GetLine
 	DCX H
 	MOV A,M
@@ -1324,7 +1267,7 @@ InputSub:
 	POP D
 	
 	PUSH B
-	CALL ParseInteger
+	;CALL ParseInteger
 	POP B
 	
 	LDAX B
