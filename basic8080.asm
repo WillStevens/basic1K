@@ -279,9 +279,16 @@ ExpEvaluate:
 ; stack - operators all have 3 as the hi byte
 ; but this call puts hi byte 0 on the stack
 
-CALL ExpEvaluateNum
-RET
+	CALL ExpEvaluateNum
+	CNC Error
+	RET
 
+ExpEvaluateOptional:
+	CALL ExpEvaluateNum
+	RC
+	DCX B
+	RET
+	
 ExpEvaluateNum:
 	; Expecting ( var integer or - sign
 	LDAX B
@@ -291,10 +298,10 @@ ExpEvaluateNum:
 	DB LeftBraceToken&0ffh,(ExpLeftBrace&0ffh)-1
 	RST_CompareJump
 	DB SubSub&0xff,(ExpNegate&0ffh)-1
-	RST_CompareJump
-	DB IntegerToken,(ExpInteger&0ffh)-1
+	CPI IntegerToken
+	JZ ExpInteger
 	; Integer token is 27, so if carry is set then it is a var
-	CNC Error
+	RNC : return with carry clear if error
 
 	; Fall through to ExpVar
 ExpVar:
@@ -720,7 +727,7 @@ NotVar:
 	PUSH H
 	
 	LXI H,TokenList
-	CALL LookupToken
+	CALL LookupToken ; M is set because of SUI
 	
 	; C contains the token value
 	MOV A,C
@@ -1133,6 +1140,7 @@ GetVarLocation:
 	; Add it twice to get the offset
 	
 	LHLD PROG_PARSE_PTR
+	INX H ; up 1 byte to avoid EndProgram marker
 	DAD D
 	DAD D
 	
@@ -1143,8 +1151,7 @@ LetSubImpl:
 	LDAX B
 	INX B
 	
-	CALL GetVarLocation
-	PUSH H
+	PUSH PSW
 	
 	; Test that we have an equals sign
 	LDAX B
@@ -1155,7 +1162,10 @@ LetSubImpl:
 	
 	RST_ExpEvaluate
 	
-	POP H
+	POP PSW
+	
+GetVLAndAssignToVar:
+	CALL GetVarLocation
 	
 AssignToVar:
 	; Put DE into var (HL)
@@ -1234,10 +1244,13 @@ PrintSub:
 	RST_CompareJump
 	DB StringToken,(PrintStringToken&0ffh)-1
 
-	RST_ExpEvaluate
+	CALL ExpEvaluateOptional
+	
 	PUSH B
-	CALL PrintInteger
+	CC PrintInteger
 	POP B
+	
+	RNC	; return without printing newline
 	
 	DB 11h ; Skip over first 2 bytes of call
 				 ; instruction to fall through
@@ -1273,6 +1286,8 @@ GotoSub:
 	CALL Error
 	
 ReturnSub:
+	
+	; TODO can save a byte
 	
 	POP H	; Get return address first
 	POP B ; Get pointer to program loc to return to
@@ -1316,19 +1331,17 @@ InputSub:
 	
 	INX B
 	
-	CALL GetVarLocation
-	
-	;JMP AssignToVar
+	;JMP GetVLAndAssignToVar
 	; use the fact that this is in page
-	; 3 to save a byte by having EndProgram
+	; 2 to save a byte by having EndProgram
 	; as the last byte of this instruction
-	; which is the opcode for INX B
+	; which is the opcode for STAX B
 	; and harmless in this comtext
 
 	DB 0c3h ; opcode for JMP
-	DB AssignToVar&0ffh
+	DB GetVLAndAssignToVar&0ffh
 EndProgram:
-	DB AssignToVar/256
+	DB GetVLAndAssignToVar/256
 EndSub:
 	JMP Ready
 
