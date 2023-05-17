@@ -27,14 +27,14 @@ GetLine:
 FreshStart:
 
   LXI H,NoCharClass
-
-	MOV B,H
 	
 NLTest:
 	MVI A,10	; check for newline
 	CMP B
 	RZ				; return if found
 
+	MOV B,H
+	
 NextCharLoop:
 
 	IN 1
@@ -116,7 +116,14 @@ NoCharClass:
   
 QuoteClassExpEnd:
 	
-	SBI (QuoteClass^QuoteClassExpEnd) & 0ffh
+	; if C=QuoteClass&0ffh then NZ
+	MVI A,QuoteClass&0ffh
+	SUB C
+	
+	; wanted to do this, but no bitwise xor in 
+	; ASM80
+	;SBI (QuoteClass^QuoteClassExpEnd) & 0ffh
+	
 	; somehow invert Z
 	SBI 1 ; iff it was zero will C be set
 	SBB A ; iff it was zero will it
@@ -176,7 +183,7 @@ TokenClassEnd:
 	XRA E
 	
 	; TODO will be 3 bytes
-	CPI 0eeh
+	CPI 0feh
 	JZ Write_Shared
 	
 	LXI D,TokenList
