@@ -26,7 +26,14 @@ GetLine:
 
 FreshStart:
 
-  LXI H,NoCharClass&0ffh
+  LXI H,NoCharClass
+
+	MOV B,H
+	
+NLTest:
+	MVI A,10	; check for newline
+	CMP B
+	RZ				; return if found
 
 NextCharLoop:
 
@@ -38,7 +45,15 @@ NextCharLoop:
 	MOV B,A
 	
   ; Do we have the same class as before?
-  CALL CharClass
+  PUSH H
+	MVI L,(ClassLookup&0ffh)-1
+	LookupClassLoop:
+	INR L
+	CMP M
+	INR L
+	JC LookupClassLoop
+	MOV C,M
+	POP H
   ; are L and C equal?
   MOV A,L
   XRA C
@@ -101,48 +116,23 @@ NoCharClass:
   
 QuoteClassExpEnd:
 	
-	; update the length
-	
-	POP H
-	PUSH H ; preserve original value
-	DAD D
-	MOV M,E ; put in -ve length
-	
-	DCX D
-
-	XTHL
-	
-	; Z is not set, so skip over 2 chars using JZ opcode. 27 is the opcode for DCX D, so
-	; this will affect E only and not D
-	DB 0cah
+	SBI (QuoteClass^QuoteClassExpEnd) & 0ffh
+	; somehow invert Z
+	SBI 1 ; iff it was zero will C be set
+	SBB A ; iff it was zero will it
+				; now be non-zero
 	
 QuoteClass:
 	; first time through Z is set and A is zero
-	; on fall through Z is not set and A 
-	; equal to XOR of lo bytes if char is a quote
-	
-	XTHL
-	MVI M,27
-	INX H
-	MOV M,B
-	XTHL
-	
-	LXI H,QuoteClassExpEnd
-	
-	; will be 3 bytes 
-	CPI (QuoteClass^QuoteClassExpEnd) & 0ffh
-	JZ FreshStart
-	
-	JMP NextCharLoop
+	; on fall through Z is set unless its the last quote
+	MVI L,(QuoteClassExpEnd&0ffh)-1
 	
 LT0Class:
-	INX H	; make sure that succesive LT0Class
-				; chars count as separate tokens
+	INX H
 	NOP
+	
 CompClass:
 	NOP
-	; If the relative position of CompClass and 
-	; AlphaClass change then change CharClass
 AlphaClass:
 	
 	XTHL
@@ -157,22 +147,47 @@ AlphaClass:
 	; good, this ensures no spurious
 	; strcmp matches
 	
-	JZ NextCharLoop
-
+	; now we nerd to decide whether to jump to:
+	; FreshStart - if its the last quote in
+	;							 a string
+	; NLTest		 - if part way through string or 
+	;								token
+	; TokenClassEnd - if end of token
+	
+	JZ NLTest
+	
+	MOV A,L
+	; will be 3 bytes
+	CPI QuoteClassExpEnd&0ffh
+	JZ FreshStart
+	
 TokenClassEnd:
 
-	LXI B,TokenList
-	
 	XTHL
 	DAD D
+	
+	; it's a var if bits 7,6,5 are 010 and
+  ; E=-2
+
+	MOV A,M
+	XRI 040h
+	MOV D,A
+	ANI 0e0h
+	XRA E
+	
+	; TODO will be 3 bytes
+	CPI 0eeh
+	JZ Write_Shared
+	
+	LXI D,TokenList
 
 LookupToken_Loop:
-	LDAX B
-	MOV D,A
+	LDAX D
+	MOV B,A
 	PUSH H
 StrCmp:
-	INX B
-	LDAX B
+	INX D
+	LDAX D
 	XRA M
 	; iff match then A is either 00h or 80h
 	; (80h if last char)
@@ -185,95 +200,37 @@ StrCmp:
 
 	POP H
 	
+	MOV D,B
+	
 	JZ Write_Shared
 	
 LookupToken:
-	LDAX B
+	LDAX D
 	INR A
-	INX B
+	INX D
   JM LookupToken_Loop
   JNZ LookupToken
 	
-  ; didn't find it, check whether it is a var
-  
-  ; it's a var if bits 7,6,5 are 010 and
-  ; E=2
-
-	MOV A,M
-	MOV D,A
-	ANI 0e0h
-	ORA E
-	
-	; TODO will be 3 bytes
-	CPI 42h
-	JZ Write_Shared
+  ; didn't find it
 	
 Error:
 	JMP Error
-	
-; 27 bytes for 6 classes - can it be simplified?
-; bit 6 set : alpha
-; bit 5 and 4 set:
-;  bits3 and (2 or 1): comp
-;  else digit
-; else
-;  check for space and quote
 
-; bits 6,5,4:
-; 000 - not allowed
-; 001
-; 010 LT0, space or quote
-; 011 digit or comp
-; 100 alpha
-;
-; Could be done with 24 bytes using lookup
-; table:
-;
-; ! Space
-; " LT0
-; 35 quote
-; 0 LT0
-; 58 digit
-; 64 comp
-; 255 alpha
-;
-; PUSH H
-; MVI L,LookupClass&0ffh
-; LookupClassLoop:
-; CMP M
-; INR L
-; JNC LookupClassLoop
-; MOV C,M
-; POP H
+; TODO
+; alphaclass, compclass and lt0class can
+; all be combined, ans call LookupToken
+; after every char
+; requires changes to lookup routine to
+; take account of coming to end of buffer
+ClassLookup:
+DB 64,AlphaClass&0ffh
+DB 58,CompClass&0ffh
+DB 48,DigitClass&0ffh
+DB 35,LT0Class&0ffh
+DB 34,QuoteClass&0ffh
+DB 33,LT0Class&0ffh
+DB 0,FreshStart&0ffh
 
-CharClass:
-; each character less than 0 is a
-; distinct class.
-; 0-9 is a class (class C)
-; : to > is a class (class 8)
-; >= @ is a class (class 9)
-	MVI C,FreshStart&0ffh
-	CPI ' '
-	RZ
-	
-	MVI C,QuoteClass&0ffh
-	CPI 34
-	RZ
-	
-	MVI C,LT0Class&0ffh
-	CPI '0'
-	RC
-
-	MVI C,DigitClass&0ffh
-	CPI '9'+1
-	RC
-
-	MVI C,CompClass&0ffh
-	CPI '@'
-	RC
-
-	INR C
-	RET
 
 
 	
