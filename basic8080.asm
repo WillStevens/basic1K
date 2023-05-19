@@ -105,8 +105,8 @@
 ;			TokenList.
 ;			Seems likely that enough space has been
 ;			freed to be able to implement FOR...NEXT
-; 2023-05-19 Free apace: About 101 bytes
-;			Issues lisg above have been addressed now
+; 2023-05-19 Free space: About 101 bytes
+;			Issues listed above have been addressed now
 ;			Testing needed to iron out problems
 
 ; For development purposes assume we have
@@ -129,9 +129,9 @@ StringToken equ 34 ; followed by string, followed by end quote
 ; Error subroutine is called.
 
 ; Input buffer is just 8 bytes long
-; used by input statement to get an integer
-; if there is a buffer overflow because user
-; enters too much the behaviour is system
+; used by input statement to get an integer.
+; If there is a buffer overflow because user
+; enters too much, the behaviour is system
 ; dependent - e.g. if writes above RAM
 ; space do nothing then its not a problem.
 ; If memory space repeats and lower 1K 
@@ -445,12 +445,9 @@ Ready:
 	LHLD PROG_PTR
 	PUSH H ; push it because we need it after 
 				 ; GetLine
-	PUSH H ; push it again because this is where
-				 ; GetLine should write to
 
 	CALL GetLine
 	
-	POP H ; get address to go into PROG_PARSE_PTR back
 	SHLD PROG_PARSE_PTR
 	POP H
 	
@@ -641,8 +638,13 @@ MR_Loop:
 ; good - it uses RST_CompareJump in two
 ; places, so be careful if moving it
 GetLine:
-	; (SP) contains where we want the line to be
-	; written to
+	; HL points where we want the line to be
+	; paraed to.
+	; On return HL points to byte adter what we've 
+	; got.
+	
+	PUSH H
+	MOV B,H ; B won't be 10
 
 FreshStart:
 
@@ -651,9 +653,9 @@ FreshStart:
 NLTest:
 	MVI A,10	; check for newline
 	CMP B
+	POP B
 	RZ				; return if found
-
-	MOV B,H
+	PUSH B
 	
 NextCharLoop:
 
@@ -1257,9 +1259,7 @@ InputSub:
 	LXI H,INPUT_BUFFER
 	MVI M,0
 	PUSH H
-	PUSH H
 	CALL GetLine
-	POP H ; Discard
 	POP H 
 	
 	MOV A,M
