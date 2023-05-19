@@ -105,6 +105,9 @@
 ;			TokenList.
 ;			Seems likely that enough space has been
 ;			freed to be able to implement FOR...NEXT
+; 2023-05-19 Free apace: About 101 bytes
+;			Issues lisg above have been addressed now
+;			Testing needed to iron out problems
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -113,11 +116,11 @@
 RAM_TOP equ 0800h ; 1 more than top byte of RAM
 
 ; Token values
-; 0-26 are variables (0 = @)
+; 0-31 are variables (0 = @)
 
 ; IntegerToken must be one greater than last var
-IntegerToken equ 27 ; followed by 16-bit integer
-StringToken equ 28 ; followed by 1 byte length, followed by string characters
+IntegerToken equ 32 ; followed by 16-bit integer
+StringToken equ 34 ; followed by string, followed by end quote
 
 ; Callable tokens are low byte of subroutine to call
 
@@ -125,12 +128,20 @@ StringToken equ 28 ; followed by 1 byte length, followed by string characters
 ; code which is tbe address on the stack when
 ; Error subroutine is called.
 
-; Input buffer must not be over a 256 byte 
-; boundary
+; Input buffer is just 8 bytes long
+; used by input statement to get an integer
+; if there is a buffer overflow because user
+; enters too much the behaviour is system
+; dependent - e.g. if writes above RAM
+; space do nothing then its not a problem.
+; If memory space repeats and lower 1K 
+; is ROM then also not much of a problem.
+
 ; Stack is just below input buffer to save code
 ; when initialising
 
-org RAM_TOP
+org RAM_TOP-8
+INPUT_BUFFER:
 STACK_INIT:
 
 ORG 0400h
@@ -398,27 +409,18 @@ ExpLeftBrace:
 	
 	CALL Error
 	
-; This 9 byte routine must reside in page 0
+; This 9 routine must start in page 0
 ; so that the last byte of a call to it is NOP
 OutputString:
 ;Pointer in B points to string token marker
-	; we can get the length into D using
-	; RST_GetDEatBC
-	; we just ignore E
-	RST_GetDEatBC
-	
-OutputString_Loop:
-;length is in D
-;pointer to string is in B
-  DCR D
-  RM
-
-	LDAX B
-	RST_PutChar
-	
+OutputStringLoop:
 	INX B
-	
-	JMP OutputString_Loop
+	LDAX B
+	CPI StringToken
+	RZ
+OutputString_WithQuote:
+	RST_PutChar
+	JMP OutputStringLoop
 	
 
 
@@ -441,12 +443,14 @@ Ready:
 	RST_NewLine
 	
 	LHLD PROG_PTR
-	PUSH H
-	PUSH H
+	PUSH H ; push it because we need it after 
+				 ; GetLine
+	PUSH H ; push it again because this is where
+				 ; GetLine should write to
 
 	CALL GetLine
 	
-	POP H ; get PROG_PTR back
+	POP H ; get address to go into PROG_PARSE_PTR back
 	SHLD PROG_PARSE_PTR
 	POP H
 	
@@ -633,11 +637,12 @@ MR_Loop:
 
 	JMP MR_CompareBC_atSP
 
+; GetLine sits entirely in page 1
+; good - it uses RST_CompareJump in two
+; places, so be careful if moving it
 GetLine:
-
-	LHLD PROG_PARSE_PTR
-	PUSH H ; now we can use XTHL to get 
-				 ; PROG_PARSE_PTR
+	; (SP) contains where we want the line to be
+	; written to
 
 FreshStart:
 
@@ -712,7 +717,7 @@ DigitClassEnd:
   ; need to preserve DE, don't care about HL
   
   XTHL
-  MVI M,28
+  MVI M,IntegerToken
   INX H
   MOV M,E
   INX H
@@ -779,9 +784,8 @@ AlphaClass:
 	JZ NLTest
 	
 	MOV A,L
-	; will be 3 bytes
-	CPI QuoteClassExpEnd&0ffh
-	JZ FreshStart
+	RST_CompareJump
+	DB QuoteClassExpEnd&0ffh,(FreshStart&0ffh)-1
 	
 TokenClassEnd:
 
@@ -797,9 +801,8 @@ TokenClassEnd:
 	ANI 0e0h
 	XRA E
 	
-	; TODO will be 3 bytes
-	CPI 0feh
-	JZ Write_Shared
+	RST_CompareJump
+	DB 0feh,(Write_Shared&0ffh)-1
 	
 	LXI D,TokenList
 
@@ -920,21 +923,14 @@ AdvanceToNextLineNum:
 	
 ATNLN_String:
 	LDAX B
-	DB 0c2h ; JNZ opcode skips 2 bytes
+	INX B
+	CPI StringToken
+	JNZ ATNLN_String
+	
+	DB 0c2h ; opcode for JNZ eats 2 bytes
 ATNLN_Int:
-	MVI A,2
-	; Add A onto BC
-	ADD C
-	MOV C,A
-	
-	; save a byte with ADC B, SUB C, MOV B,A
-	;MVI A,0
-	;ADC B
-	;MOV B,A
-	
-	ADC B
-	SUB C
-	MOV B,A
+	INX B
+	INX B
 
 	JMP AdvanceToNextLineNum
 
@@ -1038,11 +1034,9 @@ List_Token_String_Loop:
   RET
 
 List_String:
-	MVI A,34
+	CALL OutputString_WithQuote
 	RST_PutChar
-	CALL OutputString
-	MVI A,34-'@'
-	DB 11h ; opcode for LXI D to eat next 2 bytes
+	RET
 
 List_Var:
   LDAX B
@@ -1120,8 +1114,12 @@ AssignToVar:
 	RET
 	
 ; Index to subroutine address must not overlap with other token values
-; So this must be 02CA or higher
 ORG 02e0h
+
+; order in this list must make sure that a
+; token A that is a left subatring of another
+; token B appears later in the list than B
+; e.g. < is after <=
 
 TokenList:
 	DB PrintSub&0ffh
@@ -1153,18 +1151,18 @@ TokenList:
 	DB '('+128
   DB RightBraceToken&0ffh
 	DB ')'+128
-	DB LTSub&0ffh
-	DB '<'+128
-	DB GTSub&0ffh
-	DB '>'+128
-	DB GTESub&0ffh
-	DB ">",'='+128
-	DB LTESub&0ffh
-	DB "<",'='+128
 	DB EqualSub&0ffh
 	DB '='+128
 	DB NotEqualSub&0ffh
 	DB "<>"+128
+	DB GTESub&0ffh
+	DB ">",'='+128
+	DB LTESub&0ffh
+	DB "<",'='+128
+	DB LTSub&0ffh
+	DB '<'+128
+	DB GTSub&0ffh
+	DB '>'+128
 	DB AddSub&0ffh
 	DB '+'+128
 	DB SubSub&0ffh
@@ -1201,7 +1199,8 @@ PrintSub:
 				 ; last byte is NOP
 PrintStringToken:
 	CALL OutputString
-
+	INX B
+	
 PrintSubEndTest:
 	LDAX B
 	
@@ -1254,21 +1253,23 @@ IfSub:
 	JMP AdvanceToNextLineNum
 
 InputSub:
-	; TODO there is no check for integer input
 	
-	;LXI H,INPUT_BUFFER
-	;PUSH H
+	LXI H,INPUT_BUFFER
+	MVI M,0
+	PUSH H
+	PUSH H
 	CALL GetLine
-	DCX H
+	POP H ; Discard
+	POP H 
+	
 	MOV A,M
-	ORI 128
-	MOV M,A
+	CPI IntegerToken
+	CNZ Error ; TODO not user friendly
 	
-	POP D
-	
-	PUSH B
-	;CALL ParseInteger
-	POP B
+	INX H
+	MOV E,M
+	INX H
+	MOV D,M
 	
 	LDAX B
 	
