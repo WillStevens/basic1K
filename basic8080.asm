@@ -448,6 +448,8 @@ Ready:
 
 	CALL GetLine
 	
+	MVI M,EndProgram&0ffh
+	
 	SHLD PROG_PARSE_PTR
 	POP H
 	
@@ -637,6 +639,11 @@ MR_Loop:
 ; GetLine sits entirely in page 1
 ; good - it uses RST_CompareJump in two
 ; places, so be careful if moving it
+
+NLTestTrue:
+	POP H
+	RET
+	
 GetLine:
 	; HL points where we want the line to be
 	; paraed to.
@@ -651,11 +658,9 @@ FreshStart:
   LXI H,NoCharClass
 	
 NLTest:
-	MVI A,10	; check for newline
-	CMP B
-	POP B
-	RZ				; return if found
-	PUSH B
+	MOV A,B; check for newline
+	RST_CompareJump
+	DB 10,(NLTestTrue&0ffh)-1
 	
 NextCharLoop:
 
@@ -723,6 +728,9 @@ DigitClassEnd:
   INX H
   MOV M,E
   INX H
+  DB 36h ; opcode for MVI M eats next byte
+Write_Shared_AtSP:
+  POP D
 Write_Shared:
   MOV M,D
   INX H
@@ -810,7 +818,7 @@ TokenClassEnd:
 
 LookupToken_Loop:
 	LDAX D
-	MOV B,A
+	PUSH PSW
 	PUSH H
 StrCmp:
 	INX D
@@ -827,9 +835,9 @@ StrCmp:
 
 	POP H
 	
-	MOV D,B
+	JZ Write_Shared_AtSP
 	
-	JZ Write_Shared
+	POP PSW
 	
 LookupToken:
 	LDAX D
