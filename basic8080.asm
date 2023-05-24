@@ -944,6 +944,44 @@ ATNLN_Int:
 
 	JMP AdvanceToNextLineNum
 
+GetVarLocation:
+; A should contain a var token
+; and B points to tbe location after
+; the var token
+; return with var address in HL
+; and B pointing to next char
+
+	; Test that we have a var
+	CPI 27
+	CNC Error
+	
+	MVI H,VAR_SPACE/256
+	ADD A
+	MOV L,A
+	
+	RNZ
+	
+	; fall through if it is array var
+	
+	LDAX B
+	INX B
+	CPI LeftBraceToken&0ffh
+	CNZ Error
+	RST_ExpEvaluate
+	INX B
+	CPI RightBraceToken&0ffh
+	CNZ Error
+	
+	; Now DE contains the array index
+	; Add it twice to get the offset
+	
+	LHLD PROG_PARSE_PTR
+	INX H ; up 1 byte to avoid EndProgram marker
+	DAD D
+	DAD D
+	
+	RET
+	
 ; List statement implementation
 ListSubImpl:
 	LXI B,PROG_BASE
@@ -1018,7 +1056,8 @@ PrintIntegerLoop2:
 	RZ
 	CP PutChar
 	JMP PrintIntegerLoop2
- 
+
+; TODO could do this without using A using INR M/DCR M. Would save 1 byte (LDAX B)
 List_Token_Loop:
   MOV A,M
   INR A
@@ -1046,6 +1085,7 @@ List_Token_String_Loop:
 List_String:
 	CALL OutputString_WithQuote
 	RST_PutChar
+	INX B
 	RET
 
 List_Var:
@@ -1054,44 +1094,6 @@ List_Var:
   ADI '@'
   RST_PutChar
   RET
-
-GetVarLocation:
-; A should contain a var token
-; and B points to tbe location after
-; the var token
-; return with var address in HL
-; and B pointing to next char
-
-	; Test that we have a var
-	CPI 27
-	CNC Error
-	
-	MVI H,VAR_SPACE/256
-	ADD A
-	MOV L,A
-	
-	RNZ
-	
-	; fall through if it is array var
-	
-	LDAX B
-	INX B
-	CPI LeftBraceToken&0ffh
-	CNZ Error
-	RST_ExpEvaluate
-	INX B
-	CPI RightBraceToken&0ffh
-	CNZ Error
-	
-	; Now DE contains the array index
-	; Add it twice to get the offset
-	
-	LHLD PROG_PARSE_PTR
-	INX H ; up 1 byte to avoid EndProgram marker
-	DAD D
-	DAD D
-	
-	RET
 	
 ; To large to fit after TokenList
 LetSubImpl:
