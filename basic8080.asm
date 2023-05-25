@@ -108,7 +108,12 @@
 ; 2023-05-19 Free space: About 101 bytes
 ;			Issues listed above have been addressed now
 ;			Testing needed to iron out problems
-
+; 2023-05-26 Free space: About 84 bytes
+;			various bug fixes
+;			PRINT allows comma at end to suppress
+;			newline.
+;			Show > prompt symbol when ready.
+;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
 ; 1K RAM from 0400h-07FFh
@@ -431,6 +436,7 @@ Error:
 	RST_PutChar
 	POP D
 	CALL PrintInteger
+	RST_NewLine
 	
 Ready:
 	; Set stack pointer
@@ -440,7 +446,8 @@ Ready:
 	LXI H,STACK_INIT
 	SPHL
 	
-	RST_NewLine
+	MVI A,'>'
+	RST_PutChar
 	
 	LHLD PROG_PTR
 	PUSH H ; push it because we need it after 
@@ -1169,7 +1176,7 @@ TokenList:
 	DB EqualSub&0ffh
 	DB '='+128
 	DB NotEqualSub&0ffh
-	DB "<",">"+128
+	DB "<",'>'+128
 	DB GTESub&0ffh
 	DB ">",'='+128
 	DB LTESub&0ffh
@@ -1279,7 +1286,9 @@ InputSub:
 	LXI H,INPUT_BUFFER
 	MVI M,0
 	PUSH H
+	PUSH B
 	CALL GetLine
+	POP B
 	POP H 
 	
 	MOV A,M
@@ -1307,6 +1316,7 @@ InputSub:
 EndProgram:
 	DB GetVLAndAssignToVar/256
 EndSub:
+	RST_NewLine
 	JMP Ready
 
 ListSub:
