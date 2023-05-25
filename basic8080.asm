@@ -733,6 +733,7 @@ Write_Shared_AtSP:
   POP D
 Write_Shared:
   MOV M,D
+Write_Shared_Written:
   INX H
   XTHL
 
@@ -848,12 +849,12 @@ LookupToken:
 	
   ; didn't find it
 	
-Error1:
-	JMP Error1
+	MVI M,QuestionMarkToken&0ffh
+	JMP Write_Shared_Written
 
 ; TODO
 ; alphaclass, compclass and lt0class can
-; all be combined, ans call LookupToken
+; all be combined, and call LookupToken
 ; after every char
 ; requires changes to lookup routine to
 ; take account of coming to end of buffer
@@ -1126,7 +1127,7 @@ AssignToVar:
 	RET
 	
 ; Index to subroutine address must not overlap with other token values
-ORG 02e0h
+ORG 02d0h
 
 ; order in this list must make sure that a
 ; token A that is a left subatring of another
@@ -1134,6 +1135,8 @@ ORG 02e0h
 ; e.g. < is after <=
 
 TokenList:
+	DB QuestionMarkToken&0ffh
+	DB '?'+128
 	DB PrintSub&0ffh
 	DB "PRIN",'T'+128
 	DB LetSub&0ffh
@@ -1166,7 +1169,7 @@ TokenList:
 	DB EqualSub&0ffh
 	DB '='+128
 	DB NotEqualSub&0ffh
-	DB "<>"+128
+	DB "<",">"+128
 	DB GTESub&0ffh
 	DB ">",'='+128
 	DB LTESub&0ffh
@@ -1183,43 +1186,50 @@ TokenList:
 	DB '*'+128
 	DB DivSub&0ffh
 	DB '/'+128
+QuestionMarkToken:
 	DB 255; 255 can only occur at the end
-
+	
 LineNumSub:
 	INX B
 	INX B
 	RET
 
-PrintSubLoop:
-	INX B
-PrintSub:
-	LDAX B
-	RST_CompareJump
-	DB StringToken,(PrintStringToken&0ffh)-1
-
-	CALL ExpEvaluateOptional
-	
+PrintSubInteger:
 	PUSH B
 	CC PrintInteger
 	POP B
-	
-	RNC	; return without printing newline
-	
-	DB 11h ; Skip over first 2 bytes of call
-				 ; instruction to fall through
-				 ; OutputString is in page 0 so
-				 ; last byte is NOP
-PrintStringToken:
+	DCX B
+	DB 11h ; opcode to eat 2 bytes
+				 ; OutputString is on page zero
+				 ; so 3rd byte is NOP
+PrintSubString:
 	CALL OutputString
+	STC
+PrintSubLoop:
 	INX B
+	POP D
+	CMC
+PrintSub:
+	; First time called, carry is clear
+	; Subsequent times carry is clear unless
+	; last token was a comma
+	PUSH PSW
 	
-PrintSubEndTest:
 	LDAX B
 	
 	RST_CompareJump
+	DB StringToken,(PrintSubString&0ffh)-1
+	RST_CompareJump
 	DB CommaToken,(PrintSubLoop&0ffh)-1
+
+	CALL ExpEvaluateOptional
+	JC PrintSubInteger
 	
-	RST_NewLine
+	; Finished, we want to print a newline unless
+	; last one was a comma
+	POP PSW
+	RC ; return without newline if it was comma
+	RST_Newline
 	RET
 
 LetSub:
@@ -1241,7 +1251,7 @@ GotoSub:
 	
 ReturnSub:
 	
-	; TODO can save a byte
+	; TODO can save a byte using PCHL and reordering
 	
 	POP H	; Get return address first
 	POP B ; Get pointer to program loc to return to
@@ -1321,6 +1331,8 @@ ExecuteProgramLoop:
 	
 ExecuteDirect:
 
+	INX B
+	
 	; Check that it is a token between
 	; LinenumSub and ExecuteProgram
 	CPI (ExecuteProgram+1)&0ffh
@@ -1329,7 +1341,7 @@ ExecuteDirect:
 	CPI LineNumSub&0ffh
 	CC Error
 	
-	INX B
+	; Carry is clear now
 	
 	; Put return address onto stack
 	LXI H,ExecuteProgramLoop
@@ -1348,6 +1360,7 @@ RightBraceToken:
 	
 CommaToken:
 	; Jump to it
+	; Carry is clear when we do this
 	PCHL
 	
 ; Token values >= this are all operators
