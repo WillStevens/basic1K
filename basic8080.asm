@@ -116,6 +116,12 @@
 ; 2023-05-27 Free space: About 17 bytes
 ;			Added FOR NEXT (no STEP yet)
 ;			Need more space 
+; 2023-05-27 Free space: About 31 bytes
+;			Made a few small byte savings, and put
+;			token subs onto page 2 so that last one
+;			can flow onto page 3, freeing some space
+;			in page 2 to avoid having to jump out.
+;			One TODO to action
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -505,6 +511,7 @@ LineStartsWithInt:
 	
 	; DE=last
 	LHLD PROG_PARSE_PTR
+	PUSH H ; we beed it again in a minute
 	XCHG
 	
 	; (SP)=first
@@ -517,10 +524,11 @@ LineStartsWithInt:
 	MOV C,L
 	
   ; then set PROG_PTR to PROG_PARSE_PTR
+  
 	XRA A ; make sure we don't execute JNZ Ready
 				; in a moment
 	
-	LHLD PROG_PARSE_PTR
+	POP H
 	
 	JMP SetProgPtrReady
 	
@@ -625,17 +633,16 @@ MR_Loop:
 	JZ Ready
 
 	;swap (*first++,*next++)
-	MOV A,M
-	XTHL
 	PUSH D
 	MOV E,M
-	MOV M,A
-	MOV A,E
-	POP D
+	XTHL
+	MOV A,M
+	MOV M,E
 	INX H
 	XTHL
 	MOV M,A
 	INX H
+	POP D
 
 	; if (next==last) next=middle
 
@@ -649,6 +656,8 @@ MR_Loop:
 ; GetLine sits entirely in page 1
 ; good - it uses RST_CompareJump in two
 ; places, so be careful if moving it
+; Also it assumes ClassLookup on same page
+; as NoCharClass
 
 NLTestTrue:
 	POP H
@@ -656,12 +665,12 @@ NLTestTrue:
 	
 GetLine:
 	; HL points where we want the line to be
-	; paraed to.
+	; parsed to.
 	; On return HL points to byte adter what we've 
 	; got.
 	
 	PUSH H
-	MOV B,H ; B won't be 10
+	MOV B,H ; H must not be 10
 
 FreshStart:
 
@@ -852,7 +861,7 @@ StrCmp:
 	
 LookupToken:
 	LDAX D
-	INR A
+	ORA A
 	INX D
   JM LookupToken_Loop
   JNZ LookupToken
@@ -877,321 +886,10 @@ DB 34,QuoteClass&0ffh
 DB 33,LT0Class&0ffh
 DB 0,FreshStart&0ffh
 
-GetLineNum:
-	; Line number is in DE, look it up in the program and set BC to the line num token
-	; preserves DE
-	; HL is not preserved
-	; return with Z set if successful
-	;
-	; Z clear if not successful, and BC points
-	; to the first byte of the line with number
-	; greater than the request
-	
-	LXI B,PROG_BASE
-
-GetLineNumLoop:
-	CALL AdvanceToNextLineNum
-	RNZ
-	
-	INX B
-	
-	; Test for DE <= (BC), and return if true
-	; TODO - check that all of the logic works
-	; in all cases
-	LDAX B
-	SUB E
-	MOV L,A
-	INX B
-	LDAX B
-	INX B
-	SBB D ; C set if DE > (BC), and Z not set
-				; C clear if DE <= (BC)
-	JC GetLineNumLoop
-	
-	DCX B
-	DCX B
-	DCX B
-	; Now we want Z set if DE=(BC), clear
-	; otherwise 
-	
-ATNLN_RetNZ: ; shared code. Returns NZ if we know
-						 ; that A is non-zero
-	ORA L
-	
-	RET
-	
-
-AdvanceToNextLineNum:
-; BC is a pointer to somewhere in the program
-; move onto the next line number
-; return with Z set if successful
-; Z clear if fell off end of program
-
-	LDAX B
-	RST_CompareJump
-	DB EndProgram&0ffh,(ATNLN_RetNZ&0ffh)-1
-	; fell off end of program
-	
-	CPI LinenumSub&0ffh
-	RZ
-	
-	INX B
-	
-	RST_CompareJump
-	DB IntegerToken,(ATNLN_Int&0ffh)-1
-	CPI StringToken
-	JNZ AdvanceToNextLineNum
-	
-ATNLN_String:
-	LDAX B
-	INX B
-	CPI StringToken
-	JNZ ATNLN_String
-	
-	DB 0c2h ; opcode for JNZ eats 2 bytes
-ATNLN_Int:
-	INX B
-	INX B
-
-	JMP AdvanceToNextLineNum
-	
-GetVarLocationBVar:
-	LDAX B
-	INX B
-	
-GetVarLocation:
-; A should contain a var token
-; and B points to tbe location after
-; the var token
-; return with var address in HL
-; and B pointing to next char
-
-	; Test that we have a var
-	CPI 27
-	CNC Error
-	
-	MVI H,VAR_SPACE/256
-	ADD A
-	MOV L,A
-	
-	RNZ
-	
-	; fall through if it is array var
-	
-	LDAX B
-	INX B
-	CPI LeftBraceToken&0ffh
-	CNZ Error
-	RST_ExpEvaluate
-	INX B
-	CPI RightBraceToken&0ffh
-	CNZ Error
-	
-	; Now DE contains the array index
-	; Add it twice to get the offset
-	
-	LHLD PROG_PARSE_PTR
-	INX H ; up 1 byte to avoid EndProgram marker
-	DAD D
-	DAD D
-	
-	RET
-	
-; List statement implementation
-ListSubImpl:
-	LXI B,PROG_BASE
-ListLoop:
-	MVI A,' '
-	RST_PutChar
-	
-	LDAX B
-	CPI EndProgram&0ffh
-	RZ
-	
-  LXI H,ListLoop	; so that we can loop using RET
-  PUSH H
-
-	LXI H,TokenList
-
-	; These need to be on same page
-	; currently on page 2
-	RST_CompareJump
-	DB StringToken,(List_String&0ffh)-1
-	RST_CompareJump
-	DB IntegerToken,(List_Integer&0ffh)-1
-  CPI LinenumSub&0ffh
-  JNZ List_Token
-  
-List_LineNum:
-	RST_NewLine
- 
-List_Integer:
-  INX B
-  RST_GetDEatBC
- 
- 	; fall through to PrintInteger
- 	
-;Output the value in DE
-PrintInteger:
-	XRA A		; end marker is zero flag
-	PUSH PSW
-	
-	MOV A,D
-	ANI 80h
-	XRI 080h+'-'	
-	PUSH PSW		; sign bit clear if negative
-							; zero flag clear
-	CP NegateDE
-	
-PrintIntegerLoop:
-	XCHG
-	LXI D,10
-	
-	CALL DivideHL
-	; HL contains remainder after / 10
-	; DE contains the quotient
-	
-	MOV A,L
-	ADI '0'
-	MOV H,A
-	XTHL		; swap (SP) (sign) with remainder
-					; Top 2 bits of L are clear
-					; so sign and zero will be clear
-					; when this value is popped into
-					; PSW
-	PUSH H	; and push sign back
-	
-	; if DE is zero we are done
-	MOV A,D
-	ORA E
-	JNZ PrintIntegerLoop
-	
-PrintIntegerLoop2:
-	POP PSW
-	RZ
-	CP PutChar
-	JMP PrintIntegerLoop2
-
-; TODO could do this without using A using INR M/DCR M. Would save 1 byte (LDAX B)
-List_Token_Loop:
-  MOV A,M
-  INR A
-  JZ List_Var
-  INX H
-  JP List_Token_Loop
-
-List_Token:
-  LDAX B
-  CMP M
-  INX H
-  JNZ List_Token_Loop
-
-List_Token_String_Loop:
-  MOV A,M
-  ANI 07fh
-  RST_PutChar
-  ORA M
-  INX H
-  JP List_Token_String_Loop
-  
-  INX B
-  RET
-
-List_String:
-	CALL OutputString_WithQuote
-	RST_PutChar
-	INX B
-	RET
-
-List_Var:
-  LDAX B
-  INX B
-  ADI '@'
-  RST_PutChar
-  RET
-	
-; To large to fit after TokenList
-LetSubImpl:
-	CALL GetVarLocationBVar
-	
-	PUSH H
-	
-	; Test that we have an equals sign
-	LDAX B
-	CPI EqualSub&0ffh
-	CNZ Error
-	
-	INX B
-	
-	RST_ExpEvaluate
-	
-	POP H
-	
-AssignToVar:
-	; Put DE into var (HL)
-	
-	MOV M,E
-	INX H
-	MOV M,D
-	
-	RET
-	
-ForSubImpl:
-	POP H ; discard return address
-	
-	; First part is just like let statement
-	CALL LetSubImpl
-	
-	DCX H
-	PUSH H ; stack contains var loc (VL)
-	
-	; TODO check for TO
-	INX B
-	
-	RST_ExpEvaluate
-	
-	POP H
-	PUSH B ; push loop start
-	PUSH D ; push target onto stack
-	PUSH H ; push VL
-	
-	; stack now contains:
-	; VL, target, loop start
-	JMP ExecuteProgramLoop
-	
-NextSubImpl:
-	POP H ; discard return address
-	POP H
-	MOV E,M
-	INX H
-	MOV D,M
-	
-	XTHL ; stack contains VL+1, loop start
-			 ; HL contains target
-	RST_CompareHLDE
-	JZ NextDone
-	
-	XTHL ; stack contains target, loop start
-			 ; HL contains VL+1
-	INX D
-	MOV M,D
-	DCX H
-	MOV M,E
-	
-	POP D
-	POP B
-	PUSH B
-	PUSH D
-	PUSH H
-	DB 11h ; opcode for LXI D eats 2 bytes
-	
-NextDone:
-	POP H
-	POP H
-	JMP ExecuteProgramLoop
-	
-; Index to subroutine address must not overlap with other token values
-ORG 02bdh
+; Index to subroutine address must not overlap with other tolens
+; Currently TokenList starts toward the end
+; of page 1, and DivSub begins towards the end
+; of page 2 and the subroutine extends into page 2
 
 ; order in this list must make sure that a
 ; token A that is a left subatring of another
@@ -1260,7 +958,7 @@ TokenList:
 	DB DivSub&0ffh
 	DB '/'+128
 QuestionMarkToken:
-	DB 255; 255 can only occur at the end
+	DB 0 ; 0 can only occur at the end
 	
 LineNumSub:
 	INX B
@@ -1306,7 +1004,29 @@ PrintSub:
 	RET
 
 LetSub:
-	JMP LetSubImpl
+	CALL GetVarLocationBVar
+	
+	PUSH H
+	
+	; Test that we have an equals sign
+	LDAX B
+	CPI EqualSub&0ffh
+	CNZ Error
+	
+	INX B
+	
+	RST_ExpEvaluate
+	
+	POP H
+	
+AssignToVar:
+	; Put DE into var (HL)
+	
+	MOV M,E
+	INX H
+	MOV M,D
+	
+	RET
 	
 GosubSub:
 	RST_ExpEvaluate
@@ -1381,10 +1101,30 @@ EndSub:
 	JMP Ready
 
 ForSub:
-	DB 0c3h
-	DB ForSubImpl&0ffh
+	POP H ; discard return address
+				; we know where to return to,
+				; and stack shuffling costs too much
+
 ToToken:
-	DB ForSubImpl/256
+	; First part is just like let statement
+	CALL LetSub
+	
+	DCX H
+	PUSH H ; stack contains var loc (VL)
+	
+	; TODO check for TO
+	INX B
+	
+	RST_ExpEvaluate
+	
+	POP H
+	PUSH B ; push loop start
+	PUSH D ; push target onto stack
+	PUSH H ; push VL
+	
+	; stack now contains:
+	; VL, target, loop start
+	JMP ExecuteProgramLoop
 	
 NextSub:
 	DB 0c3h
@@ -1565,4 +1305,267 @@ DivLoop:
 	RST_NegateDE
 	
 	RET
+
+GetLineNum:
+	; Line number is in DE, look it up in the program and set BC to the line num token
+	; preserves DE
+	; HL is not preserved
+	; return with Z set if successful
+	;
+	; Z clear if not successful, and BC points
+	; to the first byte of the line with number
+	; greater than the request
+	
+	LXI B,PROG_BASE
+
+GetLineNumLoop:
+	CALL AdvanceToNextLineNum
+	RNZ
+	
+	INX B
+	
+	; Test for DE <= (BC), and return if true
+	; TODO - check that all of the logic works
+	; in all cases
+	LDAX B
+	SUB E
+	MOV L,A
+	INX B
+	LDAX B
+	INX B
+	SBB D ; C set if DE > (BC), and Z not set
+				; C clear if DE <= (BC)
+	JC GetLineNumLoop
+	
+	DCX B
+	DCX B
+	DCX B
+	; Now we want Z set if DE=(BC), clear
+	; otherwise 
+	
+ATNLN_RetNZ: ; shared code. Returns NZ if we know
+						 ; that A is non-zero
+	ORA L
+	
+	RET
+	
+AdvanceToNextLineNum:
+; BC is a pointer to somewhere in the program
+; move onto the next line number
+; return with Z set if successful
+; Z clear if fell off end of program
+
+	LDAX B
+	RST_CompareJump
+	DB EndProgram&0ffh,(ATNLN_RetNZ&0ffh)-1
+	; fell off end of program
+	
+	CPI LinenumSub&0ffh
+	RZ
+	
+	INX B
+	
+	RST_CompareJump
+	DB IntegerToken,(ATNLN_Int&0ffh)-1
+	CPI StringToken
+	JNZ AdvanceToNextLineNum
+	
+ATNLN_String:
+	LDAX B
+	INX B
+	CPI StringToken
+	JNZ ATNLN_String
+	
+	DB 0c2h ; opcode for JNZ eats 2 bytes
+ATNLN_Int:
+	INX B
+	INX B
+
+	JMP AdvanceToNextLineNum
+	
+GetVarLocationBVar:
+	LDAX B
+	INX B
+	
+GetVarLocation:
+; A should contain a var token
+; and B points to tbe location after
+; the var token
+; return with var address in HL
+; and B pointing to next char
+
+	; Test that we have a var
+	CPI 27
+	CNC Error
+	
+	MVI H,VAR_SPACE/256
+	ADD A
+	MOV L,A
+	
+	RNZ
+	
+	; fall through if it is array var
+	
+	LDAX B
+	INX B
+	CPI LeftBraceToken&0ffh
+	CNZ Error
+	CALL ExpLeftBrace
+	
+	; Now DE contains the array index
+	; Add it twice to get the offset
+	
+	LHLD PROG_PARSE_PTR
+	INX H ; up 1 byte to avoid EndProgram marker
+	DAD D
+	DAD D
+	
+	RET
+	
+; List statement implementation
+ListSubImpl:
+	LXI B,PROG_BASE
+ListLoop:
+	MVI A,' '
+	RST_PutChar
+	
+	LDAX B
+	CPI EndProgram&0ffh
+	RZ
+	
+  LXI H,ListLoop	; so that we can loop using RET
+  PUSH H
+
+	LXI H,TokenList
+
+	; These need to be on same page
+	; currently on page 3
+	RST_CompareJump
+	DB StringToken,(List_String&0ffh)-1
+	RST_CompareJump
+	DB IntegerToken,(List_Integer&0ffh)-1
+  CPI LinenumSub&0ffh
+  JNZ List_Token
+  
+List_LineNum:
+	RST_NewLine
+ 
+List_Integer:
+  INX B
+  RST_GetDEatBC
+ 
+ 	; fall through to PrintInteger
+ 	
+;Output the value in DE
+PrintInteger:
+	XRA A		; end marker is zero flag
+	PUSH PSW
+	
+	MOV A,D
+	ANI 80h
+	XRI 080h+'-'	
+	PUSH PSW		; sign bit clear if negative
+							; zero flag clear
+	CP NegateDE
+	
+PrintIntegerLoop:
+	XCHG
+	LXI D,10
+	
+	CALL DivideHL
+	; HL contains remainder after / 10
+	; DE contains the quotient
+	
+	MOV A,L
+	ADI '0'
+	MOV H,A
+	XTHL		; swap (SP) (sign) with remainder
+					; Top 2 bits of L are clear
+					; so sign and zero will be clear
+					; when this value is popped into
+					; PSW
+	PUSH H	; and push sign back
+	
+	; if DE is zero we are done
+	MOV A,D
+	ORA E
+	JNZ PrintIntegerLoop
+	
+PrintIntegerLoop2:
+	POP PSW
+	RZ
+	CP PutChar
+	JMP PrintIntegerLoop2
+
+List_Token_Loop:
+	; Test whether M is zero
+  INR M
+  DCR M 
+  JZ List_Var ; if reached end of TokenList
+  INX H
+  JP List_Token_Loop
+
+List_Token:
+	; on entry, A contains the token
+  ; so must not use A during this loop
+  CMP M
+  INX H
+  JNZ List_Token_Loop
+
+List_Token_String_Loop:
+  MOV A,M
+  ANI 07fh
+  RST_PutChar
+  ORA M
+  INX H
+  JP List_Token_String_Loop
+  
+  INX B
+  RET
+
+List_String:
+	CALL OutputString_WithQuote
+	RST_PutChar
+	INX B
+	RET
+
+; This 6 byte subroutine can be moved
+; anywhere to fill in holes
+List_Var:
+  LDAX B
+  INX B
+  ADI '@'
+  RST_PutChar
+  RET
+	
+NextSubImpl:
+	POP H ; discard return address
+	POP H
+	MOV E,M
+	INX H
+	MOV D,M
+	
+	XTHL ; stack contains VL+1, loop start
+			 ; HL contains target
+	RST_CompareHLDE
+	JZ NextDone
+	
+	XTHL ; stack contains target, loop start
+			 ; HL contains VL+1
+	INX D
+	MOV M,D
+	DCX H
+	MOV M,E
+	
+	POP D
+	POP B
+	PUSH B ; TODO can save 1 byte sharing with above
+	PUSH D
+	PUSH H
+	DB 11h ; opcode for LXI D eats 2 bytes
+	
+NextDone:
+	POP H
+	POP H
+	JMP ExecuteProgramLoop
 	
