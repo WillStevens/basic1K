@@ -113,6 +113,9 @@
 ;			PRINT allows comma at end to suppress
 ;			newline.
 ;			Show > prompt symbol when ready.
+; 2023-05-27 Free space: About 17 bytes
+;			Added FOR NEXT (no STEP yet)
+;			Need more space 
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -123,7 +126,7 @@ RAM_TOP equ 0800h ; 1 more than top byte of RAM
 ; Token values
 ; 0-31 are variables (0 = @)
 
-; IntegerToken must be one greater than last var
+; IntegerToken must be one more than last var
 IntegerToken equ 32 ; followed by 16-bit integer
 StringToken equ 34 ; followed by string, followed by end quote
 
@@ -951,7 +954,11 @@ ATNLN_Int:
 	INX B
 
 	JMP AdvanceToNextLineNum
-
+	
+GetVarLocationBVar:
+	LDAX B
+	INX B
+	
 GetVarLocation:
 ; A should contain a var token
 ; and B points to tbe location after
@@ -1105,10 +1112,9 @@ List_Var:
 	
 ; To large to fit after TokenList
 LetSubImpl:
-	LDAX B
-	INX B
+	CALL GetVarLocationBVar
 	
-	PUSH PSW
+	PUSH H
 	
 	; Test that we have an equals sign
 	LDAX B
@@ -1119,10 +1125,7 @@ LetSubImpl:
 	
 	RST_ExpEvaluate
 	
-	POP PSW
-	
-GetVLAndAssignToVar:
-	CALL GetVarLocation
+	POP H
 	
 AssignToVar:
 	; Put DE into var (HL)
@@ -1133,8 +1136,62 @@ AssignToVar:
 	
 	RET
 	
+ForSubImpl:
+	POP H ; discard return address
+	
+	; First part is just like let statement
+	CALL LetSubImpl
+	
+	DCX H
+	PUSH H ; stack contains var loc (VL)
+	
+	; TODO check for TO
+	INX B
+	
+	RST_ExpEvaluate
+	
+	POP H
+	PUSH B ; push loop start
+	PUSH D ; push target onto stack
+	PUSH H ; push VL
+	
+	; stack now contains:
+	; VL, target, loop start
+	JMP ExecuteProgramLoop
+	
+NextSubImpl:
+	POP H ; discard return address
+	POP H
+	MOV E,M
+	INX H
+	MOV D,M
+	
+	XTHL ; stack contains VL+1, loop start
+			 ; HL contains target
+	RST_CompareHLDE
+	JZ NextDone
+	
+	XTHL ; stack contains target, loop start
+			 ; HL contains VL+1
+	INX D
+	MOV M,D
+	DCX H
+	MOV M,E
+	
+	POP D
+	POP B
+	PUSH B
+	PUSH D
+	PUSH H
+	DB 11h ; opcode for LXI D eats 2 bytes
+	
+NextDone:
+	POP H
+	POP H
+	JMP ExecuteProgramLoop
+	
 ; Index to subroutine address must not overlap with other token values
-ORG 02d0h
+ORG 02bdh
 
 ; order in this list must make sure that a
 ; token A that is a left subatring of another
@@ -1160,6 +1217,15 @@ TokenList:
 	DB "INPU",'T'+128
 	DB EndSub&0ffh
 	DB "EN",'D'+128
+	DB ForSub&0ffh
+	DB "FO",'R'+128
+	DB ToToken&0ffh
+	DB "T",'O'+128
+	DB NextSub&0ffh
+	DB "NEX",'T'+128
+	DB StepToken&0ffh
+	DB "STE",'P'+128
+	
 ; Before this are keywords allowed at run-time
 	DB ExecuteProgram&0ffh
 	DB "RU",'N'+128
@@ -1242,7 +1308,7 @@ PrintSub:
 LetSub:
 	JMP LetSubImpl
 	
-GosubSub: ; Depth = 1
+GosubSub:
 	RST_ExpEvaluate
 	
 	POP H
@@ -1257,20 +1323,15 @@ GotoSub:
 	CALL Error
 	
 ReturnSub:
-	
-	; TODO can save a byte using PCHL and reordering
-	
-	POP H	; Get return address first
-	POP B ; Get pointer to program loc to return to
-	PUSH H
-	
-	; Expect stack size to be 4 or more
+	; Expect stack size to be 6 or more
 	; any less and we have return without gosub
-	LXI H,-(STACK_INIT-4)-1
+	LXI H,-(STACK_INIT-6)-1
 	DAD SP
 	CC Error
 	
-	RET
+	POP H	; Get return address first
+	POP B ; Get pointer to program loc to return to
+	PCHL ; instead of RET
 
 IfSub:
 	RST_ExpEvaluate
@@ -1301,10 +1362,10 @@ InputSub:
 	MOV D,M
 	
 	LDAX B
-	
 	INX B
+	CALL GetVarLocation
 	
-	;JMP GetVLAndAssignToVar
+	;JMP AssignToVar
 	; use the fact that this is in page
 	; 2 to save a byte by having EndProgram
 	; as the last byte of this instruction
@@ -1312,12 +1373,24 @@ InputSub:
 	; and harmless in this comtext
 
 	DB 0c3h ; opcode for JMP
-	DB GetVLAndAssignToVar&0ffh
+	DB AssignToVar&0ffh
 EndProgram:
-	DB GetVLAndAssignToVar/256
+	DB AssignToVar/256
 EndSub:
 	RST_NewLine
 	JMP Ready
+
+ForSub:
+	DB 0c3h
+	DB ForSubImpl&0ffh
+ToToken:
+	DB ForSubImpl/256
+	
+NextSub:
+	DB 0c3h
+	DB NextSubImpl&0ffh
+StepToken:
+	DB NextSubImpl/256
 
 ListSub:
   JMP ListSubImpl
