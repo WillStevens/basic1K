@@ -116,12 +116,13 @@
 ; 2023-05-27 Free space: About 17 bytes
 ;			Added FOR NEXT (no STEP yet)
 ;			Need more space 
-; 2023-05-27 Free space: About 31 bytes
+; 2023-05-27 Free space: About 36 bytes
 ;			Made a few small byte savings, and put
 ;			token subs onto page 2 so that last one
 ;			can flow onto page 3, freeing some space
 ;			in page 2 to avoid having to jump out.
 ;			One TODO to action
+; 2023-05-28 Free space: About 42 bytes
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -311,12 +312,6 @@ ExpEvaluate:
 	CALL ExpEvaluateNum
 	CNC Error
 	RET
-
-ExpEvaluateOptional:
-	CALL ExpEvaluateNum
-	RC
-	DCX B
-	RET
 	
 ExpEvaluateNum:
 	; Expecting ( var integer or - sign
@@ -329,7 +324,8 @@ ExpEvaluateNum:
 	DB SubSub&0xff,(ExpNegate&0ffh)-1
 	CPI IntegerToken
 	JZ ExpInteger
-	; Integer token is 27, so if carry is set then it is a var
+	; Integer token is one more than last var
+	; token so if carry is set then it is a var
 	RNC : return with carry clear if error
 
 	; Fall through to ExpVar
@@ -411,18 +407,7 @@ ExpNegate:
 	PUSH H
 	
 	JMP ExpEvaluateNum
-	
-ExpLeftBrace:
-	RST_ExpEvaluate
-	
-	LDAX B
-	INX B
-	
-	RST_CompareJump
-	DB RightBraceToken&0ffh,(ExpEvaluateOp&0ffh)-1
-	
-	CALL Error
-	
+
 ; This 9 routine must start in page 0
 ; so that the last byte of a call to it is NOP
 OutputString:
@@ -435,8 +420,19 @@ OutputStringLoop:
 OutputString_WithQuote:
 	RST_PutChar
 	JMP OutputStringLoop
-	
 
+; This must be before Error so that it
+; can fall through
+ExpLeftBrace:
+	RST_ExpEvaluate
+	
+	LDAX B
+	INX B
+	
+	RST_CompareJump
+	DB RightBraceToken&0ffh,(ExpEvaluateOp&0ffh)-1
+	
+	; fall through
 
 ;Display error code and go back to line entry
 Error:
@@ -446,6 +442,8 @@ Error:
 	POP D
 	CALL PrintInteger
 	RST_NewLine
+	
+	; fall through
 	
 Ready:
 	; Set stack pointer
@@ -861,7 +859,7 @@ StrCmp:
 	
 LookupToken:
 	LDAX D
-	ORA A
+	INR A
 	INX D
   JM LookupToken_Loop
   JNZ LookupToken
@@ -896,6 +894,8 @@ DB 0,FreshStart&0ffh
 ; token B appears later in the list than B
 ; e.g. < is after <=
 
+	DB 128 ; Having tbis here saves 2 bytes in 
+				 ; List subroutine
 TokenList:
 	DB QuestionMarkToken&0ffh
 	DB '?'+128
@@ -958,7 +958,7 @@ TokenList:
 	DB DivSub&0ffh
 	DB '/'+128
 QuestionMarkToken:
-	DB 0 ; 0 can only occur at the end
+	DB 255 ; 255 can only occur at the end
 	
 LineNumSub:
 	INX B
@@ -993,8 +993,9 @@ PrintSub:
 	RST_CompareJump
 	DB CommaToken,(PrintSubLoop&0ffh)-1
 
-	CALL ExpEvaluateOptional
+	CALL ExpEvaluateNum
 	JC PrintSubInteger
+	DCX B
 	
 	; Finished, we want to print a newline unless
 	; last one was a comma
@@ -1081,9 +1082,7 @@ InputSub:
 	INX H
 	MOV D,M
 	
-	LDAX B
-	INX B
-	CALL GetVarLocation
+	CALL GetVarLocationBVar
 	
 	;JMP AssignToVar
 	; use the fact that this is in page
@@ -1444,8 +1443,36 @@ ListLoop:
 	DB StringToken,(List_String&0ffh)-1
 	RST_CompareJump
 	DB IntegerToken,(List_Integer&0ffh)-1
-  CPI LinenumSub&0ffh
-  JNZ List_Token
+	RST_CompareJump
+	DB LinenumSub&0ffh,(List_Linenum&0ffh)-1
+  
+  ; fall through
+
+List_Token_Loop:
+	; Test whether M is 255
+  MOV D,M
+  INR D
+  JZ List_Var ; if reached end of TokenList
+  INX H
+  JP List_Token_Loop
+  
+List_Token:
+	; on entry, A contains the token
+  ; so must not use A during this loop
+  CMP M
+  INX H
+  JNZ List_Token_Loop
+
+List_Token_String_Loop:
+  MOV A,M
+  ANI 07fh
+  RST_PutChar
+  ORA M
+  INX H
+  JP List_Token_String_Loop
+  
+  INX B
+  RET
   
 List_LineNum:
 	RST_NewLine
@@ -1496,32 +1523,6 @@ PrintIntegerLoop2:
 	RZ
 	CP PutChar
 	JMP PrintIntegerLoop2
-
-List_Token_Loop:
-	; Test whether M is zero
-  INR M
-  DCR M 
-  JZ List_Var ; if reached end of TokenList
-  INX H
-  JP List_Token_Loop
-
-List_Token:
-	; on entry, A contains the token
-  ; so must not use A during this loop
-  CMP M
-  INX H
-  JNZ List_Token_Loop
-
-List_Token_String_Loop:
-  MOV A,M
-  ANI 07fh
-  RST_PutChar
-  ORA M
-  INX H
-  JP List_Token_String_Loop
-  
-  INX B
-  RET
 
 List_String:
 	CALL OutputString_WithQuote
