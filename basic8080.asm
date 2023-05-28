@@ -441,6 +441,7 @@ Error:
 	RST_PutChar
 	POP D
 	CALL PrintInteger
+NewLineReady:
 	RST_NewLine
 	
 	; fall through
@@ -509,7 +510,6 @@ LineStartsWithInt:
 	
 	; DE=last
 	LHLD PROG_PARSE_PTR
-	PUSH H ; we beed it again in a minute
 	XCHG
 	
 	; (SP)=first
@@ -526,7 +526,7 @@ LineStartsWithInt:
 	XRA A ; make sure we don't execute JNZ Ready
 				; in a moment
 	
-	POP H
+	LHLD PROG_PARSE_PTR
 	
 	JMP SetProgPtrReady
 	
@@ -595,7 +595,7 @@ MR_SetNextMiddle:
 	
 ; MemoryRotate is the entry point for the memory rotate algorithm
 ;(SP) = first
-;DE = last
+;DE = last 
 ;BC = middle
 ;HL is used as the next pointer
 
@@ -631,17 +631,18 @@ MR_Loop:
 	JZ Ready
 
 	;swap (*first++,*next++)
+	MOV A,M
+	XTHL
 	PUSH D
 	MOV E,M
-	XTHL
-	MOV A,M
-	MOV M,E
+	MOV M,A
+	MOV A,E
 	INX H
+	POP D
 	XTHL
 	MOV M,A
 	INX H
-	POP D
-
+	
 	; if (next==last) next=middle
 
 	RST_CompareHLDE
@@ -884,6 +885,45 @@ DB 34,QuoteClass&0ffh
 DB 33,LT0Class&0ffh
 DB 0,FreshStart&0ffh
 
+GetVarLocationBVar:
+	LDAX B
+	INX B
+	
+GetVarLocation:
+; A should contain a var token
+; and B points to tbe location after
+; the var token
+; return with var address in HL
+; and B pointing to next char
+
+	; Test that we have a var
+	CPI 27
+	CNC Error
+	
+	MVI H,VAR_SPACE/256
+	ADD A
+	MOV L,A
+	
+	RNZ
+	
+	; fall through if it is array var
+	
+	LDAX B
+	INX B
+	CPI LeftBraceToken&0ffh
+	CNZ Error
+	CALL ExpLeftBrace
+	
+	; Now DE contains the array index
+	; Add it twice to get the offset
+	
+	LHLD PROG_PARSE_PTR
+	INX H ; up 1 byte to avoid EndProgram marker
+	DAD D
+	DAD D
+	
+	RET
+
 ; Index to subroutine address must not overlap with other tolens
 ; Currently TokenList starts toward the end
 ; of page 1, and DivSub begins towards the end
@@ -1064,40 +1104,16 @@ IfSub:
 	JMP AdvanceToNextLineNum
 
 InputSub:
-	
-	LXI H,INPUT_BUFFER
-	MVI M,0
-	PUSH H
-	PUSH B
-	CALL GetLine
-	POP B
-	POP H 
-	
-	MOV A,M
-	CPI IntegerToken
-	CNZ Error ; TODO not user friendly
-	
-	INX H
-	MOV E,M
-	INX H
-	MOV D,M
-	
-	CALL GetVarLocationBVar
-	
-	;JMP AssignToVar
-	; use the fact that this is in page
-	; 2 to save a byte by having EndProgram
-	; as the last byte of this instruction
-	; which is the opcode for STAX B
-	; and harmless in this comtext
+	DB 0c3h ; JMP
+	DB InputSubImpl&0ffh
+EndProgram: ; because InputSub is on page 3 this
+					 ; is just an INX B instruction
+	DB InputSubImpl/256
 
-	DB 0c3h ; opcode for JMP
-	DB AssignToVar&0ffh
-EndProgram:
-	DB AssignToVar/256
+; TODO move something back into the freed space
+
 EndSub:
-	RST_NewLine
-	JMP Ready
+	JMP NewLineReady
 
 ForSub:
 	POP H ; discard return address
@@ -1124,12 +1140,39 @@ ToToken:
 	; stack now contains:
 	; VL, target, loop start
 	JMP ExecuteProgramLoop
-	
+
 NextSub:
-	DB 0c3h
-	DB NextSubImpl&0ffh
+	POP H ; discard return address
 StepToken:
-	DB NextSubImpl/256
+	POP H
+	MOV E,M
+	INX H
+	MOV D,M
+	
+	XTHL ; stack contains VL+1, loop start
+			 ; HL contains target
+	RST_CompareHLDE
+	JZ NextDone
+	
+	XTHL ; stack contains target, loop start
+			 ; HL contains VL+1
+	INX D
+	MOV M,D
+	DCX H
+	MOV M,E
+	
+	POP D
+	POP B
+	PUSH B ; TODO can save 1 byte sharing with above
+	PUSH D
+	PUSH H
+	DB 11h ; opcode for LXI D eats 2 bytes
+	
+NextDone:
+	POP H
+	POP H
+	JMP ExecuteProgramLoop
+	
 
 ListSub:
   JMP ListSubImpl
@@ -1381,45 +1424,29 @@ ATNLN_Int:
 	INX B
 
 	JMP AdvanceToNextLineNum
-	
-GetVarLocationBVar:
-	LDAX B
-	INX B
-	
-GetVarLocation:
-; A should contain a var token
-; and B points to tbe location after
-; the var token
-; return with var address in HL
-; and B pointing to next char
 
-	; Test that we have a var
-	CPI 27
-	CNC Error
+; This must be on page 3
+InputSubImpl:
+	LXI H,INPUT_BUFFER
+	MVI M,0
+	PUSH H
+	PUSH B
+	CALL GetLine
+	POP B
+	POP H 
 	
-	MVI H,VAR_SPACE/256
-	ADD A
-	MOV L,A
+	MOV A,M
+	CPI IntegerToken
+	CNZ Error ; TODO not user friendly
 	
-	RNZ
+	INX H
+	MOV E,M
+	INX H
+	MOV D,M
 	
-	; fall through if it is array var
+	CALL GetVarLocationBVar
 	
-	LDAX B
-	INX B
-	CPI LeftBraceToken&0ffh
-	CNZ Error
-	CALL ExpLeftBrace
-	
-	; Now DE contains the array index
-	; Add it twice to get the offset
-	
-	LHLD PROG_PARSE_PTR
-	INX H ; up 1 byte to avoid EndProgram marker
-	DAD D
-	DAD D
-	
-	RET
+	JMP AssignToVar
 	
 ; List statement implementation
 ListSubImpl:
@@ -1539,34 +1566,4 @@ List_Var:
   RST_PutChar
   RET
 	
-NextSubImpl:
-	POP H ; discard return address
-	POP H
-	MOV E,M
-	INX H
-	MOV D,M
-	
-	XTHL ; stack contains VL+1, loop start
-			 ; HL contains target
-	RST_CompareHLDE
-	JZ NextDone
-	
-	XTHL ; stack contains target, loop start
-			 ; HL contains VL+1
-	INX D
-	MOV M,D
-	DCX H
-	MOV M,E
-	
-	POP D
-	POP B
-	PUSH B ; TODO can save 1 byte sharing with above
-	PUSH D
-	PUSH H
-	DB 11h ; opcode for LXI D eats 2 bytes
-	
-NextDone:
-	POP H
-	POP H
-	JMP ExecuteProgramLoop
-	
+
