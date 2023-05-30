@@ -123,6 +123,10 @@
 ;			in page 2 to avoid having to jump out.
 ;			One TODO to action
 ; 2023-05-28 Free space: About 42 bytes
+; 2023-05-29 Free space: About 53 bytes
+;			Made some changes to * and / which I hope
+;			are improvements (efficienxy + code size)
+;			but testing needed to confirm this.
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -190,6 +194,10 @@ ORG 08h
 ;
 ; only use where performance is not
 ; important (parsing, printing)
+;
+; last operation affecting flags is CPI 11h
+; so state of flags is known on exit
+; (since we know what A is)
 	XTHL
 	CMP M
 	INX H
@@ -312,6 +320,10 @@ ExpEvaluate:
 	CALL ExpEvaluateNum
 	CNC Error
 	RET
+
+ExpEvaluateOptional:
+	CALL ExpEvaluateNum
+	RET
 	
 ExpEvaluateNum:
 	; Expecting ( var integer or - sign
@@ -352,7 +364,7 @@ ExpEvaluateOp:
 	;Are there operators on the stack?
 	POP H
 	
-	;H will be 0 if no operators on
+	; H will be 0 if no operators on
 	; stack (i.e. high byte of return address)
 	
 	MOV A,H
@@ -407,19 +419,6 @@ ExpNegate:
 	PUSH H
 	
 	JMP ExpEvaluateNum
-
-; This 9 routine must start in page 0
-; so that the last byte of a call to it is NOP
-OutputString:
-;Pointer in B points to string token marker
-OutputStringLoop:
-	INX B
-	LDAX B
-	CPI StringToken
-	RZ
-OutputString_WithQuote:
-	RST_PutChar
-	JMP OutputStringLoop
 
 ; This must be before Error so that it
 ; can fall through
@@ -488,11 +487,9 @@ LineStartsWithInt:
 	
 	; Is it an integer all by itself? 
 	; If so then delete the line
-	
-	LDA PROG_PARSE_PTR
-	SUB L
+	LDAX B
 	RST_CompareJump
-	DB 3,(DeleteProgramLine&0ffh)-1
+	DB EndProgram&0ffh,(DeleteProgramLine&0ffh)-1
 
 	; call GetLineNum to find either the line, or
 	; pointer to next location in program after it
@@ -1010,11 +1007,12 @@ PrintSubInteger:
 	CC PrintInteger
 	POP B
 	DCX B
-	DB 11h ; opcode to eat 2 bytes
-				 ; OutputString is on page zero
-				 ; so 3rd byte is NOP
+	XRA A ; set Z so that OutputString isn't called
+				; on fall-through
 PrintSubString:
-	CALL OutputString
+	; we know that when PrintSubString is jumped to
+	; Z will not be set
+	CNZ OutputString
 	STC
 PrintSubLoop:
 	INX B
@@ -1033,7 +1031,7 @@ PrintSub:
 	RST_CompareJump
 	DB CommaToken,(PrintSubLoop&0ffh)-1
 
-	CALL ExpEvaluateNum
+	CALL ExpEvaluateOptional
 	JC PrintSubInteger
 	DCX B
 	
@@ -1277,12 +1275,9 @@ MulSub:
 
 Multiply:
 ;multiply BC and DE into HL
-
-	MVI A,16
+	MVI A,32
 	LXI H,0
 MulLoop:
-	DAD H
-	XCHG
 	DAD H
 	XCHG
 	JNC DontAdd
@@ -1297,51 +1292,41 @@ DontAdd:
 	RET
 
 DivSub:
-;Divide (SP) by DE
+;Divide HL by DE
 ;Remainder in HL
 ;Result in DE
 
 DivideHL:
 ;Divide HL by DE
 
-	; Make HL +ve
+	; Make HL and DE different signs
 MOV A,H
-ORA A
-PUSH PSW
-XCHG
-CM NegateDE
-XCHG
-	
-	; Make DE -ve
-MOV A,D
-ORA A
+XRA D
 PUSH PSW
 CP NegateDE
-;CALL NegateDE
 	
 ;Divide HL by DE
-;Assuming that HL is +ve and DE is -ve
+;Assuming that HL and DE are different signs
 
 	PUSH B
 	LXI B,0ffffh ; Accumulator starts at -1
-	
+
 DivLoop:
 	INX B
 	DAD D
-	JC DivLoop
+	RAR A ; look for mismatch between carry and
+				; bit 7 of D to detect overflow/underflow
+	XRA D
+	JP DivLoop
 
-; Assume we want +ve remainder
  	RST_NegateDE
  	DAD D
 
-
-	PUSH B
-	POP D
+	MOV D,B
+	MOV E,C
 	
 	POP B
 	
-	POP PSW
-	CP NegateDE
 	POP PSW
 	RM
 	RST_NegateDE
@@ -1560,10 +1545,21 @@ List_String:
 ; This 6 byte subroutine can be moved
 ; anywhere to fill in holes
 List_Var:
-  LDAX B
   INX B
   ADI '@'
   RST_PutChar
   RET
-	
+
+; This 9 byte routine can be moved anywhere
+; to fill holes
+OutputString:
+;Pointer in B points to string token marker
+OutputStringLoop:
+	INX B
+	LDAX B
+	CPI StringToken
+	RZ
+OutputString_WithQuote:
+	RST_PutChar
+	JMP OutputStringLoop
 
