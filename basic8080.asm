@@ -355,6 +355,10 @@ ExpVarGetValue:
 ExpInteger:
 	RST_GetDEatBC
 	
+	db 21h; LXI H opcode to eat 2 bytes
+ExpLeftBrace:
+	CALL ExpBracketed
+	
 	; fall through to ExpEvaluateOp
 	
 ExpEvaluateOp:
@@ -422,14 +426,17 @@ ExpNegate:
 
 ; This must be before Error so that it
 ; can fall through
-ExpLeftBrace:
+ExpBracketed:
+	CPI LeftBraceToken&0ffh
+	CNZ Error
+
 	RST_ExpEvaluate
 	
 	LDAX B
 	INX B
 	
-	RST_CompareJump
-	DB RightBraceToken&0ffh,(ExpEvaluateOp&0ffh)-1
+	CPI RightBraceToken&0ffh
+	RZ
 	
 	; fall through
 
@@ -523,6 +530,7 @@ LineStartsWithInt:
 	XRA A ; make sure we don't execute JNZ Ready
 				; in a moment
 	
+	; TODO could to PUSH D after PUSH B above, then POP H here, to save 1 byte
 	LHLD PROG_PARSE_PTR
 	
 	JMP SetProgPtrReady
@@ -907,9 +915,7 @@ GetVarLocation:
 	
 	LDAX B
 	INX B
-	CPI LeftBraceToken&0ffh
-	CNZ Error
-	CALL ExpLeftBrace
+	CALL ExpBracketed
 	
 	; Now DE contains the array index
 	; Add it twice to get the offset
@@ -968,6 +974,9 @@ TokenList:
 	DB "LIS",'T'+128
 	DB NewSub&0ffh
 	DB "NE",'W'+128
+	
+	
+	
 	DB CommaToken
 	DB ','+128
 	DB LeftBraceToken&0ffh
@@ -1275,9 +1284,11 @@ MulSub:
 
 Multiply:
 ;multiply BC and DE into HL
-	MVI A,32
+	MVI A,16
 	LXI H,0
 MulLoop:
+	DAD H
+	XCHG
 	DAD H
 	XCHG
 	JNC DontAdd
@@ -1293,7 +1304,7 @@ DontAdd:
 
 DivSub:
 ;Divide HL by DE
-;Remainder in HL
+;Remainder in HL 
 ;Result in DE
 
 DivideHL:
@@ -1309,26 +1320,35 @@ CP NegateDE
 ;Assuming that HL and DE are different signs
 
 	PUSH B
-	LXI B,0ffffh ; Accumulator starts at -1
-
+	LXI B,0ffffh
+	
 DivLoop:
 	INX B
 	DAD D
-	RAR A ; look for mismatch between carry and
+	RAR   ; look for mismatch between carry and
 				; bit 7 of D to detect overflow/underflow
 	XRA D
 	JP DivLoop
 
+	; if HL is zero then it must have been a negative number originally, and the remainder is zero, so don't make any change to HL, but increment quotient by 1
+	
+	MOV A,H
+	ORA L
+	JZ DivNoRestore
+	
  	RST_NegateDE
  	DAD D
-
+	DCX B
+	
+DivNoRestore:
+	INX B
 	MOV D,B
 	MOV E,C
 	
 	POP B
 	
 	POP PSW
-	RM
+	RP
 	RST_NegateDE
 	
 	RET
