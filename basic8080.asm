@@ -127,6 +127,13 @@
 ;			Made some changes to * and / which I hope
 ;			are improvements (efficienxy + code size)
 ;			but testing needed to confirm this.
+; 2023-06-02 Free space: About 12 bytes
+;			Added support for STEP to FOR loops
+;			Noted where Z flag is in known state 
+;			in JMP instructions, because there is
+;			potential space saving by having
+;			2-byte in-page JMP, JNZ or JZ, 
+;			code shared with RST_CompareJump
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -422,7 +429,7 @@ ExpNegate:
 	MVI H,PrintSub/256
 	PUSH H
 	
-	JMP ExpEvaluateNum
+	JMP ExpEvaluateNum 
 
 ; This must be before Error so that it
 ; can fall through
@@ -533,7 +540,7 @@ LineStartsWithInt:
 	; TODO could to PUSH D after PUSH B above, then POP H here, to save 1 byte
 	LHLD PROG_PARSE_PTR
 	
-	JMP SetProgPtrReady
+	JMP SetProgPtrReady ; could be JZ
 	
 DeleteProgramLine:
 	PUSH H
@@ -655,7 +662,7 @@ MR_Loop:
 
 	; else if (first == middle) middle = next
 
-	JMP MR_CompareBC_atSP
+	JMP MR_CompareBC_atSP ; could be JNZ
 
 ; GetLine sits entirely in page 1
 ; good - it uses RST_CompareJump in two
@@ -873,7 +880,7 @@ LookupToken:
   ; didn't find it
 	
 	MVI M,QuestionMarkToken&0ffh
-	JMP Write_Shared_Written
+	JMP Write_Shared_Written ; could be JZ
 
 ; TODO
 ; alphaclass, compclass and lt0class can
@@ -1108,7 +1115,7 @@ IfSub:
 	RNZ
 
 	; If DE zero then fall through to next line
-	JMP AdvanceToNextLineNum
+	JMP AdvanceToNextLineNum ; could be JZ
 
 InputSub:
 	DB 0c3h ; JMP
@@ -1123,63 +1130,44 @@ EndSub:
 	JMP NewLineReady
 
 ForSub:
-	POP H ; discard return address
-				; we know where to return to,
-				; and stack shuffling costs too much
-
-ToToken:
-	; First part is just like let statement
-	CALL LetSub
+	JMP ForSubImpl
 	
-	DCX H
-	PUSH H ; stack contains var loc (VL)
-	
-	; TODO check for TO
-	INX B
-	
-	RST_ExpEvaluate
-	
-	POP H
-	PUSH B ; push loop start
-	PUSH D ; push target onto stack
-	PUSH H ; push VL
-	
-	; stack now contains:
-	; VL, target, loop start
-	JMP ExecuteProgramLoop
-
 NextSub:
 	POP H ; discard return address
 StepToken:
 	POP H
-	MOV E,M
-	INX H
 	MOV D,M
-	
-	XTHL ; stack contains VL+1, loop start
-			 ; HL contains target
-	RST_CompareHLDE
-	JZ NextDone
-	
-	XTHL ; stack contains target, loop start
-			 ; HL contains VL+1
-	INX D
-	MOV M,D
 	DCX H
-	MOV M,E
+	MOV E,M
 	
-	POP D
+	XTHL		; step is in HL, VL is in (SP)
+	DAD D		; add step onto var
+	XCHG		; result is in DE
+	XTHL		; step is in (SP), VL is in HL
+	
+	MOV M,E ; put back into VL
+	INX H		; H = VL+1
+	MOV M,D	
+	
+	POP H
+	POP H		; get target
+	
+	RST_NegateDE
+	DAD H		; HL now has target-loop var
+					; carry is set if LV > T
+	
+	JC NextDone
+	
 	POP B
-	PUSH B ; TODO can save 1 byte sharing with above
-	PUSH D
-	PUSH H
-	DB 11h ; opcode for LXI D eats 2 bytes
+	LXI H,-8
+	DAD SP
+	SPHL
 	
+	PUSH H
 NextDone:
 	POP H
-	POP H
+
 	JMP ExecuteProgramLoop
-	
 
 ListSub:
   JMP ListSubImpl
@@ -1452,6 +1440,48 @@ InputSubImpl:
 	CALL GetVarLocationBVar
 	
 	JMP AssignToVar
+
+ForSubImpl:
+	POP H ; discard return address
+				; we know where to return to,
+				; and stack shuffling costs too much
+
+ToToken:
+	; First part is just like let statement
+	CALL LetSub
+	
+	PUSH H ; stack contains var addr + 1 (VL+1)
+	
+	LDAX B
+	INX B
+	CPI ToToken&0ffh
+	CNZ Error
+	
+	RST_ExpEvaluate
+				 
+	PUSH D ; stack contains T,VL+1
+				 ; T is target
+				 
+	LXI D,1
+	LDAX B
+	INX B
+	CPI StepToken&0ffh
+	JNZ ForNoStep
+	
+	; we have step token
+	RST_ExpEvaluate
+	
+ForNoStep:
+	INX SP
+	INX SP
+	POP H
+	PUSH B	; staxk contains T,LS
+	DCX SP
+	DCX SP
+	PUSH D	; stack contains S,T,LS
+	PUSH H ; stack contains VL+1,S,T,LS
+	
+	JMP ExecuteProgramLoop
 	
 ; List statement implementation
 ListSubImpl:
@@ -1554,7 +1584,7 @@ PrintIntegerLoop2:
 	POP PSW
 	RZ
 	CP PutChar
-	JMP PrintIntegerLoop2
+	JMP PrintIntegerLoop2 ; could be JNZ
 
 List_String:
 	CALL OutputString_WithQuote
@@ -1581,5 +1611,5 @@ OutputStringLoop:
 	RZ
 OutputString_WithQuote:
 	RST_PutChar
-	JMP OutputStringLoop
+	JMP OutputStringLoop ; could be JNZ
 
