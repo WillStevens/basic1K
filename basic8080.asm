@@ -134,6 +134,14 @@
 ;			potential space saving by having
 ;			2-byte in-page JMP, JNZ or JZ, 
 ;			code shared with RST_CompareJump
+; 2023-06-03 Free space: About 10 bytes
+;			STEP works in +ve direction only
+;			Fixing will require more space
+;			Would also like to add ABS, RND, USR
+;			But probably need about 60 bytes for that
+; 2023-06-03 Free space: About 19 bytes
+;			Added in-page JZ to free up space
+;			Likely to have introduced errors
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -201,42 +209,24 @@ ORG 08h
 ;
 ; only use where performance is not
 ; important (parsing, printing)
-;
-; last operation affecting flags is CPI 11h
-; so state of flags is known on exit
-; (since we know what A is)
+
 	XTHL
 	CMP M
 	INX H
-	JNZ CompareJump_Skip
-	MOV L,M
+	JMP CompareJump_Entry
 	
-CompareJump_Skip:
-	
-	; Overflow 3 instructions into next RST, which
-	; is short, so can interleave to fit extra
-	; 3 instructions in
-	
-	DB 0feh ; Opcode for CPI eats next byte
+	; 2 bytes free
 	
 .macro RST_NewLine
 RST 2
 .endm
 ORG 10h
 NewLine:
-; can only be called from places where the
-; value in DE can be overwritten
-	DB 11h ; Opcode LXI D eats next 2 bytes
-	INX H
-	DB 0feh ; Opcode for CPI eats next byte
-	DB 11h ; Opcode LXI D eats next 2 bytes
-	
-ExpApplyOp: ; shared code
-	XTHL
-	RET
 	
 	MVI A,10
 
+	; 6 bytes free
+	
 	; fall through
 
 .macro RST_PutChar
@@ -257,16 +247,18 @@ PutChar:
 ; Space for 5 bytes - likely to need for
 ; any real implementation of PutChar
 
-.macro RST_GetDEatBC
+.macro RST_JZPage
 RST 4
 .endm
 ORG 20h
-	LDAX B
-	MOV E,A
-	INX B
-	LDAX B
-	MOV D,A
-	INX B
+	XTHL
+CompareJump_Entry:
+	JNZ JZPage_Skip
+	MOV L,M
+JZPage_Skip:
+	INX H
+ExpApplyOp: ; shared code
+	XTHL
 	RET
 
 .macro RST_CompareHLDE
@@ -341,8 +333,9 @@ ExpEvaluateNum:
 	DB LeftBraceToken&0ffh,(ExpLeftBrace&0ffh)-1
 	RST_CompareJump
 	DB SubSub&0xff,(ExpNegate&0ffh)-1
-	CPI IntegerToken
-	JZ ExpInteger
+	RST_CompareJump
+	DB IntegerToken,(ExpInteger&0ffh)-1
+	
 	; Integer token is one more than last var
 	; token so if carry is set then it is a var
 	RNC : return with carry clear if error
@@ -360,7 +353,7 @@ ExpVarGetValue:
 	db 3eh ; opcode for MVI A eats next byte
 
 ExpInteger:
-	RST_GetDEatBC
+	CALL GetDEatBC
 	
 	db 21h; LXI H opcode to eat 2 bytes
 ExpLeftBrace:
@@ -496,8 +489,7 @@ Ready:
 	
 LineStartsWithInt:
 	; Get the line number into DE
-	INX B
-	RST_GetDEatBC
+	CALL GetDEatBC_INXB
 	
 	; Is it an integer all by itself? 
 	; If so then delete the line
@@ -526,6 +518,9 @@ LineStartsWithInt:
 	; (SP)=first
 	PUSH B
 	
+	PUSH D ; push PROG_PARSE_PTR so we
+				 ; can get it back in a minute
+	
 	; BC=middle
 	LHLD PROG_PTR
 	MVI M,LineNumSub&0ffh; undo what we did earlier
@@ -537,10 +532,10 @@ LineStartsWithInt:
 	XRA A ; make sure we don't execute JNZ Ready
 				; in a moment
 	
-	; TODO could to PUSH D after PUSH B above, then POP H here, to save 1 byte
-	LHLD PROG_PARSE_PTR
+	POP H ; get back PROG_PARSE_PTR
 	
-	JMP SetProgPtrReady ; could be JZ
+	RST_JZPage
+	DB (SetProgPtrReady&0ffh)-1
 	
 DeleteProgramLine:
 	PUSH H
@@ -551,7 +546,7 @@ DeleteProgramLine:
 	PUSH B
 	
 	INX B
-	CALL ATNLN_Int
+	CALL ATNLN_Int ; Z is set when this is called
 	
 	POP D
 	PUSH D
@@ -598,6 +593,8 @@ SetProgPtrReady: ; code shared by three things
 	
 	JNZ Ready
 	
+	; fall through
+	
 MemoryRotate:
 
 MR_SetNextMiddle:
@@ -640,7 +637,10 @@ MR_Loop:
 	XTHL
 	XCHG
 	
-	JZ Ready
+	JZ Ready ; This is only just in page 1
+					 ; so any space saving before
+					 ; this could save an additional byte
+					 ; if this bumps down
 
 	;swap (*first++,*next++)
 	MOV A,M
@@ -658,7 +658,7 @@ MR_Loop:
 	; if (next==last) next=middle
 
 	RST_CompareHLDE
-	JZ MR_SetNextMiddle
+	JZ MR_SetNextMiddle ; not on same page
 
 	; else if (first == middle) middle = next
 
@@ -673,7 +673,7 @@ MR_Loop:
 NLTestTrue:
 	POP H
 	RET
-	
+
 GetLine:
 	; HL points where we want the line to be
 	; parsed to.
@@ -696,7 +696,8 @@ NextCharLoop:
 
 	IN 1
 	ANI 1
-	JZ NextCharLoop
+	RST_JZPage
+	DB (NextCharLoop&0ffh)-1
 	IN 0
 	
 	MOV B,A
@@ -719,8 +720,36 @@ NextCharLoop:
   PCHL ; Jump based on previous CharClass pointer 
 
 DigitClass:
-  JNZ DigitClassEnd
- 
+	RST_JZPage
+  DB (DigitClassNotEnd&0ffh)-1
+  
+DigitClassEnd:
+  ; Write token into program
+  ; need to preserve DE, don't care about HL
+  
+  XTHL
+  MVI M,IntegerToken
+  INX H
+  MOV M,E
+  INX H
+  DB 36h ; opcode for MVI M eats next byte
+Write_Shared_AtSP:
+  POP D
+Write_Shared:
+  MOV M,D
+Write_Shared_Written:
+  INX H
+  XTHL
+
+NoCharClass:
+  MOV L,C
+  XRA A ; set Z
+  MOV D,A ; reset state information
+  MOV E,A
+
+  PCHL
+  
+DigitClassNotEnd:
  	PUSH H
   ; A is zero at this point
   
@@ -748,32 +777,6 @@ DigitClass:
 	POP H
 	
   JMP NextCharLoop
-
-DigitClassEnd:
-  ; Write token into program
-  ; need to preserve DE, don't care about HL
-  
-  XTHL
-  MVI M,IntegerToken
-  INX H
-  MOV M,E
-  INX H
-  DB 36h ; opcode for MVI M eats next byte
-Write_Shared_AtSP:
-  POP D
-Write_Shared:
-  MOV M,D
-Write_Shared_Written:
-  INX H
-  XTHL
-
-NoCharClass:
-  MOV L,C
-  XRA A ; set Z
-  MOV D,A ; reset state information
-  MOV E,A
-
-  PCHL
   
 QuoteClassExpEnd:
 	
@@ -822,7 +825,8 @@ AlphaClass:
 	;								token
 	; TokenClassEnd - if end of token
 	
-	JZ NLTest
+	RST_JZPage
+	DB (NLTest&0ffh)-1
 	
 	MOV A,L
 	RST_CompareJump
@@ -858,7 +862,8 @@ StrCmp:
 	; iff match then A is either 00h or 80h
 	; (80h if last char)
 	INX H
-	JZ Strcmp ; match and not last char
+	RST_JZPage
+	DB (Strcmp&0ffh)-1 ; match and not last char
 	
 	; equal to 080h iff match and last char
 	XRI 080h
@@ -866,7 +871,8 @@ StrCmp:
 
 	POP H
 	
-	JZ Write_Shared_AtSP
+	RST_JZPage
+	DB (Write_Shared_AtSP&0ffh)-1
 	
 	POP PSW
 	
@@ -880,7 +886,8 @@ LookupToken:
   ; didn't find it
 	
 	MVI M,QuestionMarkToken&0ffh
-	JMP Write_Shared_Written ; could be JZ
+	RST_JZPage
+	DB (Write_Shared_Written&0ffh)-1
 
 ; TODO
 ; alphaclass, compclass and lt0class can
@@ -967,12 +974,8 @@ TokenList:
 	DB "EN",'D'+128
 	DB ForSub&0ffh
 	DB "FO",'R'+128
-	DB ToToken&0ffh
-	DB "T",'O'+128
 	DB NextSub&0ffh
 	DB "NEX",'T'+128
-	DB StepToken&0ffh
-	DB "STE",'P'+128
 	
 ; Before this are keywords allowed at run-time
 	DB ExecuteProgram&0ffh
@@ -983,7 +986,10 @@ TokenList:
 	DB "NE",'W'+128
 	
 	
-	
+	DB ToToken&0ffh
+	DB "T",'O'+128
+	DB StepToken&0ffh
+	DB "STE",'P'+128
 	DB CommaToken
 	DB ','+128
 	DB LeftBraceToken&0ffh
@@ -1116,6 +1122,7 @@ IfSub:
 
 	; If DE zero then fall through to next line
 	JMP AdvanceToNextLineNum ; could be JZ
+													 ; not on same page
 
 InputSub:
 	DB 0c3h ; JMP
@@ -1123,8 +1130,6 @@ InputSub:
 EndProgram: ; because InputSub is on page 3 this
 					 ; is just an INX B instruction
 	DB InputSubImpl/256
-
-; TODO move something back into the freed space
 
 EndSub:
 	JMP NewLineReady
@@ -1134,27 +1139,28 @@ ForSub:
 	
 NextSub:
 	POP H ; discard return address
-StepToken:
-	POP H
+	; stack contains VL+1,S,T,LS
+	POP H	; get VL+1
 	MOV D,M
 	DCX H
 	MOV E,M
 	
 	XTHL		; step is in HL, VL is in (SP)
+	XCHG		; step is in DE, var value in HL
 	DAD D		; add step onto var
-	XCHG		; result is in DE
+	XCHG		; result is in DE, step is in HL
 	XTHL		; step is in (SP), VL is in HL
 	
 	MOV M,E ; put back into VL
 	INX H		; H = VL+1
 	MOV M,D	
 	
-	POP H
-	POP H		; get target
+	POP H		; skip over step on stack
+	POP H		; get -T
+	DCX H
 	
-	RST_NegateDE
-	DAD H		; HL now has target-loop var
-					; carry is set if LV > T
+	DAD D 	; HL now has LV-T
+					; carry is set if LV>=T
 	
 	JC NextDone
 	
@@ -1166,7 +1172,8 @@ StepToken:
 	PUSH H
 NextDone:
 	POP H
-
+	; Z flag may be affected by future
+	; changes to NextSub, so revisit this later
 	JMP ExecuteProgramLoop
 
 ListSub:
@@ -1198,7 +1205,12 @@ ExecuteDirect:
 	CPI (ExecuteProgram+1)&0ffh
 	CNC Error
 
+; ( ) , TO STEP tokens must have values between 
+; keywords and operators
+
+ToToken:
 	CPI LineNumSub&0ffh
+StepToken:
 	CC Error
 	
 	; Carry is clear now
@@ -1206,8 +1218,6 @@ ExecuteDirect:
 	; Put return address onto stack
 	LXI H,ExecuteProgramLoop
 
-; ( ) , tokens must have values between keywords
-; and operators
 LeftBraceToken:
 	PUSH H
 	
@@ -1266,12 +1276,13 @@ SubSub:
 	RET
 
 MulSub:
+; multiple HL and DE into DE, preserving B
 	PUSH B
 	MOV B,H
 	MOV C,L
 
 Multiply:
-;multiply BC and DE into HL
+;multiply BC and DE into DE
 	MVI A,16
 	LXI H,0
 MulLoop:
@@ -1322,7 +1333,10 @@ DivLoop:
 	
 	MOV A,H
 	ORA L
-	JZ DivNoRestore
+	RST_JZPage ; assume it is on same page
+						 ; because DivSub will
+						 ; be right at end of page 2
+	DB (DivNoRestore&0ffh)-1
 	
  	RST_NegateDE
  	DAD D
@@ -1383,7 +1397,7 @@ ATNLN_RetNZ: ; shared code. Returns NZ if we know
 	ORA L
 	
 	RET
-	
+
 AdvanceToNextLineNum:
 ; BC is a pointer to somewhere in the program
 ; move onto the next line number
@@ -1412,14 +1426,35 @@ ATNLN_String:
 	JNZ ATNLN_String
 	
 	DB 0c2h ; opcode for JNZ eats 2 bytes
-ATNLN_Int:
+ATNLN_Int: ; Z is always set when we reach here
 	INX B
 	INX B
-
-	JMP AdvanceToNextLineNum
+	
+	RST_JZPage
+	DB (AdvanceToNextLineNum&0ffh)-1
 
 ; This must be on page 3
 InputSubImpl:
+	; TODO
+	; does cost of calling GetLine means
+	; that it js better to read and test chars 
+	; directly, and turn *10 into a subroutine
+	; can also make use of classlookup
+	; subroutine
+	
+	; PUSH B
+	
+	; CALL GetChar and class lookup ; 3
+	; MVI A,DigitClass ; 2
+	; CMP C						 ; 1
+	; CNZ Error 			 ; 3
+	; 
+	; XRA A				 ; 1
+	; CALL Mul10Acc ; 2
+	; JMP InputLoop ; 2
+	
+	; POP B
+	
 	LXI H,INPUT_BUFFER
 	MVI M,0
 	PUSH H
@@ -1439,14 +1474,13 @@ InputSubImpl:
 	
 	CALL GetVarLocationBVar
 	
-	JMP AssignToVar
+	JMP AssignToVar ; could be JZ
+									; not on same page
 
 ForSubImpl:
 	POP H ; discard return address
 				; we know where to return to,
 				; and stack shuffling costs too much
-
-ToToken:
 	; First part is just like let statement
 	CALL LetSub
 	
@@ -1458,17 +1492,18 @@ ToToken:
 	CNZ Error
 	
 	RST_ExpEvaluate
-				 
-	PUSH D ; stack contains T,VL+1
+	RST_NegateDE
+	
+	PUSH D ; stack contains -T,VL+1
 				 ; T is target
 				 
 	LXI D,1
 	LDAX B
-	INX B
 	CPI StepToken&0ffh
 	JNZ ForNoStep
 	
 	; we have step token
+	INX B
 	RST_ExpEvaluate
 	
 ForNoStep:
@@ -1514,7 +1549,8 @@ List_Token_Loop:
 	; Test whether M is 255
   MOV D,M
   INR D
-  JZ List_Var ; if reached end of TokenList
+  RST_JZPage ; if reached end of TokenList
+  DB (List_Var&0ffh)-1
   INX H
   JP List_Token_Loop
   
@@ -1540,8 +1576,7 @@ List_LineNum:
 	RST_NewLine
  
 List_Integer:
-  INX B
-  RST_GetDEatBC
+  CALL GetDEatBC_INXB
  
  	; fall through to PrintInteger
  	
@@ -1613,3 +1648,15 @@ OutputString_WithQuote:
 	RST_PutChar
 	JMP OutputStringLoop ; could be JNZ
 
+; This 8 byte routine can be moved anywhere in
+; memory to fill holes
+GetDEatBC_INXB:
+	INX B
+GetDEatBC:
+	LDAX B
+	MOV E,A
+	INX B
+	LDAX B
+	MOV D,A
+	INX B
+	RET
