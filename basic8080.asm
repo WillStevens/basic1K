@@ -142,6 +142,8 @@
 ; 2023-06-03 Free space: About 19 bytes
 ;			Added in-page JZ to free up space
 ;			Likely to have introduced errors
+; 2023-06-04 Free space: About 25 bytes
+;			Shortened PrintSub
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -296,9 +298,6 @@ NegateDE:
 	INX D
 	RET
 
-
-
-
 .macro RST_ExpEvaluate
 RST 7
 .endm
@@ -333,8 +332,11 @@ ExpEvaluateNum:
 	DB LeftBraceToken&0ffh,(ExpLeftBrace&0ffh)-1
 	RST_CompareJump
 	DB SubSub&0xff,(ExpNegate&0ffh)-1
-	RST_CompareJump
-	DB IntegerToken,(ExpInteger&0ffh)-1
+	; can't use RST_CompareJump below
+	; because it doesn't preserve C after
+	; comparison.
+	CPI IntegerToken
+	JZ ExpInteger
 	
 	; Integer token is one more than last var
 	; token so if carry is set then it is a var
@@ -350,7 +352,8 @@ ExpVarGetValue:
 	MOV D,M
 	
 	; fall through to ExpEvaluateOp
-	db 3eh ; opcode for MVI A eats next byte
+	db 21h; opcode for LXI H eats 2 byte
+				; third byte is NOP
 
 ExpInteger:
 	CALL GetDEatBC
@@ -423,6 +426,19 @@ ExpNegate:
 	PUSH H
 	
 	JMP ExpEvaluateNum 
+
+; This 8 byte routine can be moved anywhere in
+; memory to fill holes
+GetDEatBC_INXB:
+	INX B
+GetDEatBC:
+	LDAX B
+	MOV E,A
+	INX B
+	LDAX B
+	MOV D,A
+	INX B
+	RET
 
 ; This must be before Error so that it
 ; can fall through
@@ -693,7 +709,6 @@ NLTest:
 	DB 10,(NLTestTrue&0ffh)-1
 	
 NextCharLoop:
-
 	IN 1
 	ANI 1
 	RST_JZPage
@@ -712,6 +727,7 @@ NextCharLoop:
 	JC LookupClassLoop
 	MOV C,M
 	POP H
+	
   ; are L and C equal?
   MOV A,L
   XRA C
@@ -1024,22 +1040,22 @@ LineNumSub:
 	INX B
 	RET
 
-PrintSubInteger:
-	PUSH B
-	CC PrintInteger
-	POP B
-	DCX B
-	XRA A ; set Z so that OutputString isn't called
-				; on fall-through
 PrintSubString:
-	; we know that when PrintSubString is jumped to
-	; Z will not be set
-	CNZ OutputString
-	STC
+	CALL OutputString ; carry is clear on return
+	
+	DB 11h ; LXI D eats 2 bytes
+				; PrintInteger must be on page 3
+				; so that 3rd byte is INX B opcode
+				
+PrintSubInteger:
+	CALL PrintInteger ; carry is clear on return
+	
+	DB 11h ; LXI D eats 2 bytes
 PrintSubLoop:
+	STC
 	INX B
-	POP D
-	CMC
+	POP D ; discard, since we are about to push again
+	
 PrintSub:
 	; First time called, carry is clear
 	; Subsequent times carry is clear unless
@@ -1441,10 +1457,10 @@ InputSubImpl:
 	; directly, and turn *10 into a subroutine
 	; can also make use of classlookup
 	; subroutine
-	
+	; seems not worth doing
 	; PUSH B
-	
-	; CALL GetChar and class lookup ; 3
+	;InputLoop:
+	; CALL GetCharAndClass ; 3
 	; MVI A,DigitClass ; 2
 	; CMP C						 ; 1
 	; CNZ Error 			 ; 3
@@ -1581,16 +1597,17 @@ List_Integer:
  	; fall through to PrintInteger
  	
 ;Output the value in DE
+; This must be in page 3 so that 3rd byte of call
+; is INX B opcode
 PrintInteger:
 	XRA A		; end marker is zero flag
 	PUSH PSW
 	
-	MOV A,D
-	ANI 80h
-	XRI 080h+'-'	
-	PUSH PSW		; sign bit clear if negative
-							; zero flag clear
-	CP NegateDE
+	ORA D
+	JP PrintIntegerLoop
+	MVI A,'-'
+	RST_PutChar
+	RST_NegateDE
 	
 PrintIntegerLoop:
 	XCHG
@@ -1599,16 +1616,9 @@ PrintIntegerLoop:
 	CALL DivideHL
 	; HL contains remainder after / 10
 	; DE contains the quotient
-	
-	MOV A,L
-	ADI '0'
-	MOV H,A
-	XTHL		; swap (SP) (sign) with remainder
-					; Top 2 bits of L are clear
-					; so sign and zero will be clear
-					; when this value is popped into
-					; PSW
-	PUSH H	; and push sign back
+
+	MOV H,L
+	PUSH H	; push onto stack
 	
 	; if DE is zero we are done
 	MOV A,D
@@ -1618,7 +1628,8 @@ PrintIntegerLoop:
 PrintIntegerLoop2:
 	POP PSW
 	RZ
-	CP PutChar
+	ADI '0'
+	RST_PutChar
 	JMP PrintIntegerLoop2 ; could be JNZ
 
 List_String:
@@ -1634,29 +1645,16 @@ List_Var:
   ADI '@'
   RST_PutChar
   RET
-
-; This 9 byte routine can be moved anywhere
-; to fill holes
+	
+; This 9 byte routine can be moved anywhere to
+; fill holes
+OutputStringLoop:
+OutputString_WithQuote:
+	RST_PutChar
 OutputString:
 ;Pointer in B points to string token marker
-OutputStringLoop:
 	INX B
 	LDAX B
 	CPI StringToken
-	RZ
-OutputString_WithQuote:
-	RST_PutChar
-	JMP OutputStringLoop ; could be JNZ
-
-; This 8 byte routine can be moved anywhere in
-; memory to fill holes
-GetDEatBC_INXB:
-	INX B
-GetDEatBC:
-	LDAX B
-	MOV E,A
-	INX B
-	LDAX B
-	MOV D,A
-	INX B
+	JNZ OutputStringLoop
 	RET
