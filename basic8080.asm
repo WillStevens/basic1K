@@ -144,6 +144,11 @@
 ;			Likely to have introduced errors
 ; 2023-06-04 Free space: About 25 bytes
 ;			Shortened PrintSub
+; 2023-06-04 Free space: about -21 bytes
+;			Implementing ABS and USR and skeleton 
+;		  of RND makes it 21 bytes over budget.
+;			So it seems reasonablw to think that
+;			space can be made for these.
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -325,8 +330,16 @@ ExpEvaluateOptional:
 	
 ExpEvaluateNum:
 	; Expecting ( var integer or - sign
+	; or function call
 	LDAX B
 	INX B
+	
+	RST_CompareJump
+	DB UsrToken&0ffh,(UsrSub&0ffh)-1
+	RST_CompareJump
+	DB RndToken&0ffh,(RndSub&0ffh)-1
+	RST_CompareJump
+	DB AbsToken&0ffh,(AbsSub&0ffh)-1
 	
 	RST_CompareJump
 	DB LeftBraceToken&0ffh,(ExpLeftBrace&0ffh)-1
@@ -439,6 +452,23 @@ GetDEatBC:
 	MOV D,A
 	INX B
 	RET
+
+UsrSub:
+	CALL ExpBracketed
+	XCHG
+	LXI D,ExpEvaluateOp
+	PUSH D
+	PCHL
+	
+RndSub:
+	CALL ExpBracketed
+	JMP ExpEvaluateOp
+	
+AbsSub:
+	CALL ExpBracketed
+	ORA D
+	CM NegateDE
+	JMP ExpEvaluateOp
 
 ; This must be before Error so that it
 ; can fall through
@@ -1001,7 +1031,15 @@ TokenList:
 	DB NewSub&0ffh
 	DB "NE",'W'+128
 	
-	
+; before operators are non-statement
+; non-operator tokens
+
+	DB UsrToken&0ffh
+	DB "US",'R'+128
+	DB RndToken&0ffh
+	DB "RN",'D'+128
+	DB AbsToken&0ffh
+	DB "AB",'S'+128
 	DB ToToken&0ffh
 	DB "T",'O'+128
 	DB StepToken&0ffh
@@ -1221,34 +1259,38 @@ ExecuteDirect:
 	CPI (ExecuteProgram+1)&0ffh
 	CNC Error
 
-; ( ) , TO STEP tokens must have values between 
-; keywords and operators
-
-ToToken:
 	CPI LineNumSub&0ffh
-StepToken:
 	CC Error
 	
 	; Carry is clear now
 	
 	; Put return address onto stack
 	LXI H,ExecuteProgramLoop
-
-LeftBraceToken:
 	PUSH H
 	
-RightBraceToken:
 	; Put pointer to call address into HL
 	MOV L,A
 	; ExecuteProgramLoop must be on the same page
 	; page as PrintSub so that we don't have to
 	; update H
-	
-CommaToken:
+
 	; Jump to it
 	; Carry is clear when we do this
 	PCHL
-	
+
+; USR, RND, ABS
+; ( ) , TO STEP tokens must have values between 
+; keywords and operators
+
+UsrToken equ ExecuteProgram+1
+RndToken equ ExecuteProgram+2
+AbsToken equ ExecuteProgram+3
+ToToken equ ExecuteProgram+4
+StepToken equ ExecuteProgram+5
+LeftBraceToken equ ExecuteProgram+6
+RightBraceToken equ ExecuteProgram+7
+CommaToken equ ExecuteProgram+8
+
 ; Token values >= this are all operators
 Operators:
 
@@ -1638,8 +1680,6 @@ List_String:
 	INX B
 	RET
 
-; This 6 byte subroutine can be moved
-; anywhere to fill in holes
 List_Var:
   INX B
   ADI '@'
