@@ -149,7 +149,7 @@
 ;		  of RND makes it 21 bytes over budget.
 ;			So it seems reasonablw to think that
 ;			space can be made for these.
-; 2023-06-05 Free space: about -16 bytes
+; 2023-06-05 Free space: about -15 bytes
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -336,18 +336,19 @@ ExpEvaluateNum:
 	INX B
 	
 	RST_CompareJump
-	DB UsrToken&0ffh,(UsrSub&0ffh)-1
-	RST_CompareJump
-	DB RndToken&0ffh,(RndSub&0ffh)-1
-	RST_CompareJump
-	DB AbsToken&0ffh,(AbsSub&0ffh)-1
-	
-	RST_CompareJump
 	DB LeftBraceToken&0ffh,(ExpLeftBrace&0ffh)-1
 	RST_CompareJump
 	DB SubSub&0xff,(ExpNegate&0ffh)-1
+	
+	; last function
+	CPI AbsSub&0ffh
+	RNC ; if its greater than this, its an error
+	; first function
+	CPI UsrSub&0ffh
+	JNC FunctionCall ; between UsrSub and AbsSub
+	
 	; can't use RST_CompareJump below
-	; because it doesn't preserve C after
+	; because it doesn't preserve Carry after
 	; comparison.
 	CPI IntegerToken
 	JZ ExpInteger
@@ -462,22 +463,9 @@ FunctionCall:
 	CALL ExpBracketed
 	POP PSW
 	MOV L,A
-	MVI H,PrintSub/246
+	MVI H,PrintSub/256
 	PCHL
 
-; TODO - put these onto page 2
-UsrSub:
-	XCHG
-	PCHL
-	
-RndSub:
-	RET
-	
-AbsSub:
-	ORA D
-	RP
-	RST_NegateDE
-	RET
 
 ; This must be before Error so that it
 ; can fall through
@@ -1043,12 +1031,13 @@ TokenList:
 ; before operators are non-statement
 ; non-operator tokens
 
-	DB UsrToken&0ffh
+	DB UsrSub&0ffh
 	DB "US",'R'+128
-	DB RndToken&0ffh
+	DB RndSub&0ffh
 	DB "RN",'D'+128
-	DB AbsToken&0ffh
+	DB AbsSub&0ffh
 	DB "AB",'S'+128
+	
 	DB ToToken&0ffh
 	DB "T",'O'+128
 	DB StepToken&0ffh
@@ -1188,12 +1177,14 @@ IfSub:
 													 ; not on same page
 
 InputSub:
-	DB 0c3h ; JMP
-	DB InputSubImpl&0ffh
-EndProgram: ; because InputSub is on page 3 this
-					 ; is just an INX B instruction
-	DB InputSubImpl/256
+	JMP InputSubImpl
+	
+EndProgram equ InputSub+2
+	; because InputSubImpl is on page 3 this
+	; 3rd byte of JMP  is just an INX B instruction
 
+	; fall through
+	
 EndSub:
 	JMP NewLineReady
 
@@ -1202,7 +1193,7 @@ ForSub:
 	
 NextSub:
 	POP H ; discard return address
-	; stack contains VL+1,S,T,LS
+	; stack contains VL+1,S,-T,LS
 	POP H	; get VL+1
 	MOV D,M
 	DCX H
@@ -1225,25 +1216,18 @@ NextSub:
 	DAD D 	; HL now has LV-T
 					; carry is set if LV>=T
 	
-	JC NextDone
+	POP H ; this is LoopStart
+	JC ExecuteProgramLoop
 	
-	POP B
+	MOV B,H
+	MOV C,L
 	LXI H,-8
 	DAD SP
 	SPHL
 	
-	PUSH H
-NextDone:
-	POP H
-	; Z flag may be affected by future
-	; changes to NextSub, so revisit this later
-	JMP ExecuteProgramLoop
-
-ListSub:
-  JMP ListSubImpl
-
-NewSub:
-	RST 0
+	DCR B
+	DB 21h ; opcode for LXI H eats 2 bytes
+				 ; third byte is INR B
 	
 ExecuteProgram:
 	
@@ -1287,18 +1271,41 @@ ExecuteDirect:
 	; Carry is clear when we do this
 	PCHL
 
-; USR, RND, ABS
+ListSub:
+  JMP ListSubImpl
+
+NewSub:
+	RST 0
+
+AbsSub:
+	MOV A,D ; save one byte once address of
+				  ; AbsSub is fixed using XRA D
+	ORA A
+	RP
+	RST_NegateDE
+	RET
+	
+UsrSub:
+	XCHG
+	PCHL
+	
+RndSub:
+	; could be:
+	; have two pointers into program code
+	; get value from each, increment each by
+	; two prime numbers sized about 150
+	
+	db 0,0,0,0 ; assume it will be at least 5 bytes
+	RET
+	
 ; ( ) , TO STEP tokens must have values between 
 ; keywords and operators
 
-UsrToken equ ExecuteProgram+1
-RndToken equ ExecuteProgram+2
-AbsToken equ ExecuteProgram+3
-ToToken equ ExecuteProgram+4
-StepToken equ ExecuteProgram+5
-LeftBraceToken equ ExecuteProgram+6
-RightBraceToken equ ExecuteProgram+7
-CommaToken equ ExecuteProgram+8
+ToToken equ RndSub+1
+StepToken equ RndSub+2
+LeftBraceToken equ RndSub+3
+RightBraceToken equ RndSub+4
+CommaToken equ RndSub+5
 
 ; Token values >= this are all operators
 Operators:
@@ -1465,6 +1472,17 @@ ATNLN_RetNZ: ; shared code. Returns NZ if we know
 	
 	RET
 
+ATNLN_String:
+	LDAX B
+	INX B
+	CPI StringToken
+	JNZ ATNLN_String
+	
+	DB 0c2h ; opcode for JNZ eats 2 bytes
+ATNLN_Int: ; Z is always set when we reach here
+	INX B
+	INX B
+	
 AdvanceToNextLineNum:
 ; BC is a pointer to somewhere in the program
 ; move onto the next line number
@@ -1483,23 +1501,10 @@ AdvanceToNextLineNum:
 	
 	RST_CompareJump
 	DB IntegerToken,(ATNLN_Int&0ffh)-1
-	CPI StringToken
-	JNZ AdvanceToNextLineNum
+	RST_CompareJump
+	DB StringToken,(ATNLN_String&0ffh)-1
+	JMP AdvanceToNextLineNum
 	
-ATNLN_String:
-	LDAX B
-	INX B
-	CPI StringToken
-	JNZ ATNLN_String
-	
-	DB 0c2h ; opcode for JNZ eats 2 bytes
-ATNLN_Int: ; Z is always set when we reach here
-	INX B
-	INX B
-	
-	RST_JZPage
-	DB (AdvanceToNextLineNum&0ffh)-1
-
 ; This must be on page 3
 InputSubImpl:
 	; TODO
@@ -1523,7 +1528,6 @@ InputSubImpl:
 	; POP B
 	
 	LXI H,INPUT_BUFFER
-	MVI M,0
 	PUSH H
 	PUSH B
 	CALL GetLine
@@ -1566,22 +1570,24 @@ ForSubImpl:
 				 
 	LXI D,1
 	LDAX B
-	CPI StepToken&0ffh
-	JNZ ForNoStep
 	
+	RST_CompareJump
+	DB StepToken&0ffh,(ForWithStep&0ffh)-1
+
+	DB 21h ; LXI H opcode eats the next 2 bytes
+ForWithStep:
 	; we have step token
 	INX B
 	RST_ExpEvaluate
 	
-ForNoStep:
 	INX SP
 	INX SP
 	POP H
-	PUSH B	; staxk contains T,LS
+	PUSH B	; stack contains -T,LS
 	DCX SP
 	DCX SP
-	PUSH D	; stack contains S,T,LS
-	PUSH H ; stack contains VL+1,S,T,LS
+	PUSH D	; stack contains S,-T,LS
+	PUSH H ; stack contains VL+1,S,-T,LS
 	
 	JMP ExecuteProgramLoop
 	
