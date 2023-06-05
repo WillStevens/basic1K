@@ -149,7 +149,8 @@
 ;		  of RND makes it 21 bytes over budget.
 ;			So it seems reasonablw to think that
 ;			space can be made for these.
-;
+; 2023-06-05 Free space: about -16 bytes
+
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
 ; 1K RAM from 0400h-07FFh
@@ -453,22 +454,30 @@ GetDEatBC:
 	INX B
 	RET
 
-UsrSub:
-	CALL ExpBracketed
-	XCHG
+FunctionCall:
+	; A contains the address to call on page 2
+	PUSH PSW
 	LXI D,ExpEvaluateOp
 	PUSH D
+	CALL ExpBracketed
+	POP PSW
+	MOV L,A
+	MVI H,PrintSub/246
+	PCHL
+
+; TODO - put these onto page 2
+UsrSub:
+	XCHG
 	PCHL
 	
 RndSub:
-	CALL ExpBracketed
-	JMP ExpEvaluateOp
+	RET
 	
 AbsSub:
-	CALL ExpBracketed
 	ORA D
-	CM NegateDE
-	JMP ExpEvaluateOp
+	RP
+	RST_NegateDE
+	RET
 
 ; This must be before Error so that it
 ; can fall through
