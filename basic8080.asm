@@ -147,9 +147,13 @@
 ; 2023-06-04 Free space: about -21 bytes
 ;			Implementing ABS and USR and skeleton 
 ;		  of RND makes it 21 bytes over budget.
-;			So it seems reasonablw to think that
+;			So it seems reasonable to think that
 ;			space can be made for these.
 ; 2023-06-05 Free space: about -15 bytes
+; 2023-06-19 Free space: about 6 bytes
+;			Replaced memory rotate with triple reversal
+;			algorithm. Back below size limit, but need
+;		  to rearrange things to realize this.
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -204,14 +208,15 @@ ORG 00h
 	; put PROG_BASE into PROG_PTR and
 	; jump to Ready
 	LXI H,PROG_BASE
-	XRA A 
-	INR A ; make sure that Z is not set
-	JMP SetProgPtrReady
+	SHLD PROG_PTR
+	db 0c3h ; JMP
+	db Ready&0ffh
 	
 .macro RST_CompareJump
 RST 1
 .endm
 ORG 08h
+	db Ready/256 ; should be zero (NOP)
 ; byte after RST is compared with A
 ; if equal then jump to address on same page.
 ;
@@ -223,7 +228,7 @@ ORG 08h
 	INX H
 	JMP CompareJump_Entry
 	
-	; 2 bytes free
+	; 1 bytes free
 	
 .macro RST_NewLine
 RST 2
@@ -243,7 +248,6 @@ RST 3
 ORG 18h
 
 ; PutChar is called frequently
-; it can be called using RST 1
 
 PutChar:
 	; Assume that port 0 is for char I/O
@@ -554,159 +558,92 @@ LineStartsWithInt:
 	; middle = PROG_PTR
 	; last = PROG_PARSE_PTR
 	
-	; DE=last
-	LHLD PROG_PARSE_PTR
-	XCHG
-	
-	; (SP)=first
-	PUSH B
-	
-	PUSH D ; push PROG_PARSE_PTR so we
-				 ; can get it back in a minute
-	
-	; BC=middle
 	LHLD PROG_PTR
 	MVI M,LineNumSub&0ffh; undo what we did earlier
-	MOV B,H
-	MOV C,L
+	XCHG
+	LHLD PROG_PARSE_PTR
 	
-  ; then set PROG_PTR to PROG_PARSE_PTR
-  
-	XRA A ; make sure we don't execute JNZ Ready
-				; in a moment
+	PUSH H ; last
+	PUSH B ; first
 	
-	POP H ; get back PROG_PARSE_PTR
+	PUSH D ; middle
 	
+	; this will clear carry flag
+	; if not on page boundary
 	RST_JZPage
-	DB (SetProgPtrReady&0ffh)-1
-	
+	DB (Entry&0ffh)-1
+
 DeleteProgramLine:
-	PUSH H
+	; 23 bytes (-7)
 	CALL GetLineNum
-	POP H
 	JNZ Ready		; if line not found, do nothing
 
-	PUSH B
+	PUSH H ; last
+	PUSH B ; first
+	PUSH H ; last
+	
+	DAD B ; HL=PROG_PTR+first
 	
 	INX B
 	CALL ATNLN_Int ; Z is set when this is called
 	
-	POP D
-	PUSH D
-	
-	; Both DE and (SP) contain 'first' ptr
-	; HL contains PROG_PTR
-	; (HL was set to PROG_PTR at call)
-	
-	; B-(SP) is the amount we need to set PROG_PTR back by...
-	XTHL	; DE=first, HL = first, (SP)=PROG_PTR
+	;set HL to what we want PROG_PTR to be
+	MOV D,B
+	MOV E,C
 	RST_NegateDE
-	XCHG	; DE = first, HL=-first
-	DAD B	; HL = middle-first
 	
-	; Now HL contains the amount to decrease PROG_PTR by and (SP) contains PROG_PTR
-	; we want to put PROG_PTR into DE and 
-	; PTOG_PTR-HL into PROG_PTR
+	DAD D ; HL=PROG_PTR+first-middle
+
+	STC ; skip first reverse in memory rotate
+			; because we don't care about the
+			; line being deleted
 	
-	XCHG	; DE=middle-first, HL=first
-	RST_NegateDE ; DE=first-middle
-	XTHL	; HL=PROG_PTR, (SP)=first
-	XCHG	; DE=PROG_PTR, HL=first-middle
-	DAD D 
+Entry:
+	; carry is clear if coming from
+	; insert
 	
-	; Now DE contains PROG_PTR and HL contains
-	; what we want to put into PROG_PTR
-	
-SetProgPtrReady: ; code shared by three things
+	PUSH B ; middle (or first)
+
 	SHLD PROG_PTR
-
-	; (SP) = first
-	; DE = last
-	; BC = middle
-
-	; If calling from DeleteProgramLine then
-	; Z will still be as returned from
-	; AdvanceToNextLineNum
-	; if Z was clear it means that line to delete
-	; is last line, so no need to do MemoryRotate
-
-	; If calling from insert then Z will be set
-	
-	; If calling from RST 0 Z will be clear
-	
-	JNZ Ready
-	
-	; fall through
 	
 MemoryRotate:
+; 27 bytes -9
+; stack must contain (from top down)
+; first, middle, first, last
+; DE = middle
+; HL = Last
 
-MR_SetNextMiddle:
-	; next = middle
-	MOV H,B
-	MOV L,C
-	
-; MemoryRotate is the entry point for the memory rotate algorithm
-;(SP) = first
-;DE = last 
-;BC = middle
-;HL is used as the next pointer
+  CNC Reverse
+  CALL ReverseDH
+  
+  LXI B,Ready
+  PUSH B
 
-;DE is preserved, no other registers are
+ReverseDH:
+	POP H
+  POP D
+  XTHL
+  
+Reverse:
+; HL = last
+; DE = first
 
-	; fall through - doesn't matter which branch is 
-	; taken at JC below
-MR_CompareBC_atSP:
-	XTHL
-	MOV A,L
-	SUB C
-	MOV A,H
-	SBB B
-	; now carry is set if middle > first
-	; and will be clear when middle = first
-	XTHL
-	JC MR_Loop
-
-MR_SetMiddleNext:
-	; middle = next
-	MOV B,H
-	MOV C,L
-
-MR_Loop:
-	;while (first != next)
-	;Compare (SP) with HL and return if equal
-	XCHG
-	XTHL
+ReverseLoop:
 	RST_CompareHLDE
-	XTHL
-	XCHG
-	
-	JZ Ready ; This is only just in page 1
-					 ; so any space saving before
-					 ; this could save an additional byte
-					 ; if this bumps down
-
-	;swap (*first++,*next++)
-	MOV A,M
-	XTHL
-	PUSH D
-	MOV E,M
-	MOV M,A
-	MOV A,E
-	INX H
-	POP D
-	XTHL
-	MOV M,A
-	INX H
-	
-	; if (next==last) next=middle
-
+	RZ
+	DCX H
 	RST_CompareHLDE
-	JZ MR_SetNextMiddle ; not on same page
-
-	; else if (first == middle) middle = next
-
-	JMP MR_CompareBC_atSP ; could be JNZ
-
+	RZ
+	
+	MOV B,M
+	LDAX D
+	MOV M,A
+	MOV A,B
+	STAX D
+	INX D
+	
+	JMP ReverseLoop
+	
 ; GetLine sits entirely in page 1
 ; good - it uses RST_CompareJump in two
 ; places, so be careful if moving it
@@ -1433,6 +1370,10 @@ GetLineNum:
 	; Line number is in DE, look it up in the program and set BC to the line num token
 	; preserves DE
 	; HL is not preserved
+	; TODO if HL could be preserved this
+	; would save at least 2 bytes. HL can probably 
+	; preserved with PUSH PSW, XTHl, POP H below
+	;
 	; return with Z set if successful
 	;
 	; Z clear if not successful, and BC points
