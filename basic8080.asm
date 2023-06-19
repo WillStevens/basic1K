@@ -328,10 +328,6 @@ ExpEvaluate:
 	CALL ExpEvaluateNum
 	CNC Error
 	RET
-
-ExpEvaluateOptional:
-	CALL ExpEvaluateNum
-	RET
 	
 ExpEvaluateNum:
 	; Expecting ( var integer or - sign
@@ -470,6 +466,46 @@ FunctionCall:
 	MVI H,PrintSub/256
 	PCHL
 
+PrintSubString:
+	CALL OutputString ; carry is clear on return
+	
+	DB 11h ; LXI D eats 2 bytes
+				; PrintInteger must be on page 3
+				; so that 3rd byte is INX B opcode
+				
+PrintSubInteger:
+	CALL PrintInteger ; carry is clear on return
+	
+	DB 11h ; LXI D eats 2 bytes
+PrintSubLoop:
+	STC
+	INX B
+	POP D ; discard, since we are about to push again
+	
+PrintSubImpl:
+	; First time called, carry is clear
+	; Subsequent times carry is clear unless
+	; last token was a comma
+	PUSH PSW
+	
+	LDAX B
+	
+	RST_CompareJump
+	DB StringToken,(PrintSubString&0ffh)-1
+	RST_CompareJump
+	DB CommaToken,(PrintSubLoop&0ffh)-1
+
+	; must be called from page 0
+	CALL ExpEvaluateNum 
+	JC PrintSubInteger
+	DCX B
+	
+	; Finished, we want to print a newline unless
+	; last one was a comma
+	POP PSW
+	RC ; return without newline if it was comma
+	RST_Newline
+	RET
 
 ; This must be before Error so that it
 ; can fall through
@@ -1012,46 +1048,9 @@ LineNumSub:
 	INX B
 	INX B
 	RET
-
-PrintSubString:
-	CALL OutputString ; carry is clear on return
-	
-	DB 11h ; LXI D eats 2 bytes
-				; PrintInteger must be on page 3
-				; so that 3rd byte is INX B opcode
-				
-PrintSubInteger:
-	CALL PrintInteger ; carry is clear on return
-	
-	DB 11h ; LXI D eats 2 bytes
-PrintSubLoop:
-	STC
-	INX B
-	POP D ; discard, since we are about to push again
 	
 PrintSub:
-	; First time called, carry is clear
-	; Subsequent times carry is clear unless
-	; last token was a comma
-	PUSH PSW
-	
-	LDAX B
-	
-	RST_CompareJump
-	DB StringToken,(PrintSubString&0ffh)-1
-	RST_CompareJump
-	DB CommaToken,(PrintSubLoop&0ffh)-1
-
-	CALL ExpEvaluateOptional
-	JC PrintSubInteger
-	DCX B
-	
-	; Finished, we want to print a newline unless
-	; last one was a comma
-	POP PSW
-	RC ; return without newline if it was comma
-	RST_Newline
-	RET
+	CALL PrintSubImpl
 
 LetSub:
 	CALL GetVarLocationBVar
