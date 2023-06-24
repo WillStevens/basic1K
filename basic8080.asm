@@ -163,6 +163,10 @@
 ;			So discounting this I am 2 bytes over
 ;			budget, and haven't implemented RND
 ;			function yet
+; 2023-06-23 Free space : 18 bytes
+;			Saved space with more sharing between
+; 		LET and INPUT
+;			Ready to do a lot of testing
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -505,6 +509,43 @@ PrintSubImpl:
 	RST_Newline
 	RET
 
+GetVarLocationBVar:
+	LDAX B
+	INX B
+	
+GetVarLocation:
+; A should contain a var token
+; and B points to tbe location after
+; the var token
+; return with var address in HL
+; and B pointing to next char
+
+	; Test that we have a var
+	CPI 27
+	CNC Error
+	
+	MVI H,VAR_SPACE/256
+	ADD A
+	MOV L,A
+	
+	RNZ
+	
+	; fall through if it is array var
+	
+	LDAX B
+	INX B
+	CALL ExpBracketed
+	
+	; Now DE contains the array index
+	; Add it twice to get the offset
+	
+	LHLD PROG_PARSE_PTR
+	INX H ; up 1 byte to avoid EndProgram marker
+	DAD D
+	DAD D
+	
+	RET
+	
 ; This must be before Error so that it
 ; can fall through
 ExpBracketed:
@@ -602,13 +643,13 @@ LineStartsWithInt:
 	
 	PUSH D ; middle
 	
+	XRA A
 	; this will clear carry flag
 	; if not on page boundary
 	RST_JZPage
 	DB (Entry&0ffh)-1
 
 DeleteProgramLine:
-	; 23 bytes (-7)
 	CALL GetLineNum
 	JNZ Ready		; if line not found, do nothing
 
@@ -640,7 +681,6 @@ Entry:
 	SHLD PROG_PTR
 	
 MemoryRotate:
-; 27 bytes -9
 ; stack must contain (from top down)
 ; first, middle, first, last
 ; DE = middle
@@ -676,43 +716,6 @@ ReverseLoop:
 	INX D
 	
 	JMP ReverseLoop
-
-GetVarLocationBVar:
-	LDAX B
-	INX B
-	
-GetVarLocation:
-; A should contain a var token
-; and B points to tbe location after
-; the var token
-; return with var address in HL
-; and B pointing to next char
-
-	; Test that we have a var
-	CPI 27
-	CNC Error
-	
-	MVI H,VAR_SPACE/256
-	ADD A
-	MOV L,A
-	
-	RNZ
-	
-	; fall through if it is array var
-	
-	LDAX B
-	INX B
-	CALL ExpBracketed
-	
-	; Now DE contains the array index
-	; Add it twice to get the offset
-	
-	LHLD PROG_PARSE_PTR
-	INX H ; up 1 byte to avoid EndProgram marker
-	DAD D
-	DAD D
-	
-	RET
 	
 ; List statement implementation
 ListSubImpl:
@@ -947,6 +950,7 @@ LetSub:
 	
 	INX B
 	
+LetSubEvaluate:
 	RST_ExpEvaluate
 	
 	POP H
@@ -1098,8 +1102,8 @@ ExecuteProgramLoop:
 	LDAX B
 
 	; Check that it is a token less than
-	; ListSub
-	CPI (ListSub)&0ffh
+	; ExecuteProgram
+	CPI ExecuteProgram&0ffh
 	CNC Error
 	
 ExecuteDirect:
@@ -1107,8 +1111,8 @@ ExecuteDirect:
 	INX B
 	
 	; Check that it is a token between
-	; LinenumSub and ExecuteProgram
-	CPI (ExecuteProgram+1)&0ffh
+	; LinenumSub and NewSub
+	CPI (NewSub+1)&0ffh
 	CNC Error
 
 	CPI LineNumSub&0ffh
@@ -1633,26 +1637,18 @@ InputSubImpl:
 	
 	; POP B
 	
+	CALL GetVarLocationBVar
+	PUSH B
+	PUSH H
+	
 	LXI H,INPUT_BUFFER
 	PUSH H
-	PUSH B
 	CALL GetLine
 	POP B
-	POP H 
 	
-	MOV A,M
-	CPI IntegerToken
-	CNZ Error ; TODO not user friendly
-	
-	INX H
-	MOV E,M
-	INX H
-	MOV D,M
-	
-	CALL GetVarLocationBVar
-	
-	JMP AssignToVar ; could be JZ
-									; not on same page
+	CALL LetSubEvaluate
+	POP B
+	RET
 
 ; This 8 byte routine can be moved anywhere in
 ; memory to fill holes
