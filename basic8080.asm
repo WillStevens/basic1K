@@ -382,11 +382,12 @@ ExpVarGetValue:
 	MOV D,M
 	
 	; fall through to ExpEvaluateOp
-	db 21h; opcode for LXI H eats 2 byte
-				; third byte is NOP
+	; A will not ever be 255 at tbis point,
+	; so INR A ensures Z is not set
+	INR A 
 
-ExpInteger:
-	CALL GetDEatBC
+ExpInteger: ; Z is set on jump to here
+	CZ GetDEatBC
 	
 	db 21h; LXI H opcode to eat 2 bytes
 ExpLeftBrace:
@@ -519,6 +520,7 @@ GetVarLocation:
 ; the var token
 ; return with var address in HL
 ; and B pointing to next char
+; A will never be 255 on return
 
 	; Test that we have a var
 	CPI 27
@@ -936,7 +938,7 @@ LineNumSub:
 	RET
 	
 PrintSub:
-	CALL PrintSubImpl
+	JMP PrintSubImpl
 
 LetSub:
 	CALL GetVarLocationBVar
