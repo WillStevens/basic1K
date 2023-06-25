@@ -471,13 +471,8 @@ FunctionCall:
 
 PrintSubString:
 	CALL OutputString ; carry is clear on return
-	
-	DB 11h ; LXI D eats 2 bytes
-				; PrintInteger must be on page 3
-				; so that 3rd byte is INX B opcode
-				
-PrintSubInteger:
-	CALL PrintInteger ; carry is clear on return
+PrintSubInteger:  ; carry is set on jump to here
+	CC PrintInteger ; carry is clear on return
 	
 	DB 11h ; LXI D eats 2 bytes
 PrintSubLoop:
@@ -785,8 +780,6 @@ List_Integer:
  	; fall through to PrintInteger
  	
 ;Output the value in DE
-; This must be in page 3 so that 3rd byte of call
-; is INX B opcode
 PrintInteger:
 	XRA A		; end marker is zero flag
 	PUSH PSW
@@ -823,7 +816,6 @@ PrintIntegerLoop2:
 List_String:
 	CALL OutputString_WithQuote
 	RST_PutChar
-	INX B
 	RET
 
 List_Var:
@@ -843,6 +835,7 @@ OutputString:
 	LDAX B
 	CPI StringToken
 	JNZ OutputStringLoop
+	INX B
 	RET
 
 ; Index to subroutine address must not overlap with other tokens
@@ -1619,6 +1612,7 @@ DB 0,FreshStart&0ffh
 
 ; This must be on page 3
 InputSubImpl:
+; 18 bytes
 	; TODO
 	; does cost of calling GetLine means
 	; that it js better to read and test chars 
