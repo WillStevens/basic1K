@@ -167,6 +167,7 @@
 ;			Saved space with more sharing between
 ; 		LET and INPUT
 ;			Ready to do a lot of testing
+; 2023-06-28 Free space : 20 bytes
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -543,6 +544,20 @@ GetVarLocation:
 	
 	RET
 	
+; This 9 byte routine can be moved anywhere to
+; fill holes
+OutputStringLoop:
+OutputString_WithQuote:
+	RST_PutChar
+OutputString:
+;Pointer in B points to string token marker
+	INX B
+	LDAX B
+	CPI StringToken
+	JNZ OutputStringLoop
+	INX B
+	RET
+	
 ; This must be before Error so that it
 ; can fall through
 ExpBracketed:
@@ -823,20 +838,6 @@ List_Var:
   ADI '@'
   RST_PutChar
   RET
-
-; This 9 byte routine can be moved anywhere to
-; fill holes
-OutputStringLoop:
-OutputString_WithQuote:
-	RST_PutChar
-OutputString:
-;Pointer in B points to string token marker
-	INX B
-	LDAX B
-	CPI StringToken
-	JNZ OutputStringLoop
-	INX B
-	RET
 
 ; Index to subroutine address must not overlap with other tokens
 ; Currently TokenList starts toward the end
@@ -1290,40 +1291,33 @@ DivNoRestore:
 
 GetLineNum:
 	; Line number is in DE, look it up in the program and set BC to the line num token
-	; preserves DE
-	; HL is not preserved
-	; TODO if HL could be preserved this
-	; would save at least 2 bytes. HL can probably 
-	; preserved with PUSH PSW, XTHl, POP H below
-	;
+	; Doesn't preserve DE
+	; HL is preserved
+	; 
 	; return with Z set if successful
 	;
 	; Z clear if not successful, and BC points
 	; to the first byte of the line with number
 	; greater than the request
 	
-	LXI B,PROG_BASE
+	LXI B,PROG_BASE-1 ; 1 bytes before PROG_BASE
 
 GetLineNumLoop:
-	CALL AdvanceToNextLineNum
+	CALL ATNLN_INXB ; has one INX B preceeding
 	RNZ
 	
 	INX B
 	
 	; Test for DE <= (BC), and return if true
-	; TODO - check that all of the logic works
-	; in all cases
 	LDAX B
+	INX B
 	SUB E
-	MOV L,A
-	INX B
+	MOV E,A ; need to use this later to test for Z
 	LDAX B
-	INX B
 	SBB D ; C set if DE > (BC), and Z not set
 				; C clear if DE <= (BC)
 	JC GetLineNumLoop
 	
-	DCX B
 	DCX B
 	DCX B
 	; Now we want Z set if DE=(BC), clear
@@ -1331,7 +1325,7 @@ GetLineNumLoop:
 	
 ATNLN_RetNZ: ; shared code. Returns NZ if we know
 						 ; that A is non-zero
-	ORA L
+	ORA E
 	
 	RET
 
@@ -1344,6 +1338,7 @@ ATNLN_String:
 	DB 0c2h ; opcode for JNZ eats 2 bytes
 ATNLN_Int: ; Z is always set when we reach here
 	INX B
+ATNLN_INXB:
 	INX B
 	
 AdvanceToNextLineNum:
