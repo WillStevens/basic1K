@@ -168,6 +168,9 @@
 ; 		LET and INPUT
 ;			Ready to do a lot of testing
 ; 2023-06-28 Free space : 20 bytes
+; 2023-06-28 Free space : 19 bytes
+;			Fixed enough bugs that lunar lander works
+;			Function calls don't work yet
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -460,15 +463,16 @@ ExpNegate:
 	JMP ExpEvaluateNum 
 
 FunctionCall:
-	; A contains the address to call on page 2
-	PUSH PSW
+	; push return addrrss
 	LXI D,ExpEvaluateOp
 	PUSH D
-	CALL ExpBracketed
-	POP PSW
+	; A contains the address to call on page 2
+	; push function address
 	MOV L,A
 	MVI H,PrintSub/256
-	PCHL
+	PUSH H
+	
+	JMP ExpBracketed
 
 PrintSubString:
 	CALL OutputString ; carry is clear on return
@@ -662,7 +666,9 @@ LineStartsWithInt:
 	DB (Entry&0ffh)-1
 
 DeleteProgramLine:
+	PUSH H
 	CALL GetLineNum
+	POP H
 	JNZ Ready		; if line not found, do nothing
 
 	PUSH H ; last
@@ -948,7 +954,8 @@ LetSub:
 	
 LetSubEvaluate:
 	RST_ExpEvaluate
-	
+
+AssignToVarPOPH:
 	POP H
 	
 AssignToVar:
@@ -1137,7 +1144,7 @@ NewSub:
 	RST 0
 
 AbsSub:
-	MOV A,D ; save one byte once address of
+	MOV A,D ; TODO save one byte once address of
 				  ; AbsSub is fixed using XRA D
 	ORA A
 	RP
@@ -1291,8 +1298,8 @@ DivNoRestore:
 
 GetLineNum:
 	; Line number is in DE, look it up in the program and set BC to the line num token
-	; Doesn't preserve DE
-	; HL is preserved
+	; DE is preserved
+	; HL is not preserved
 	; 
 	; return with Z set if successful
 	;
@@ -1312,7 +1319,7 @@ GetLineNumLoop:
 	LDAX B
 	INX B
 	SUB E
-	MOV E,A ; need to use this later to test for Z
+	MOV L,A
 	LDAX B
 	SBB D ; C set if DE > (BC), and Z not set
 				; C clear if DE <= (BC)
@@ -1325,7 +1332,7 @@ GetLineNumLoop:
 	
 ATNLN_RetNZ: ; shared code. Returns NZ if we know
 						 ; that A is non-zero
-	ORA E
+	ORA L
 	
 	RET
 
@@ -1629,17 +1636,17 @@ InputSubImpl:
 	; POP B
 	
 	CALL GetVarLocationBVar
-	PUSH B
 	PUSH H
+	PUSH B
 	
 	LXI H,INPUT_BUFFER
 	PUSH H
 	CALL GetLine
 	POP B
 	
-	CALL LetSubEvaluate
+	RST_ExpEvaluate
 	POP B
-	RET
+	JMP AssignToVarPOPH
 
 ; This 8 byte routine can be moved anywhere in
 ; memory to fill holes
