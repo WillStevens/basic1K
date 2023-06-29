@@ -1154,7 +1154,7 @@ RndSub:
 	; get value from each, increment each by
 	; two prime numbers sized about 150
 	
-	db 0,0,0,0 ; assume it will be at least 5 bytes
+	db 0,0,0,0,0 ; assume it will be at least 5 bytes
 	RET
 	
 ; ( ) , TO STEP tokens must have values between 
