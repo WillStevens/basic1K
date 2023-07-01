@@ -171,6 +171,11 @@
 ; 2023-06-28 Free space : 19 bytes
 ;			Fixed enough bugs that lunar lander works
 ;			Function calls don't work yet
+; 2023-07-01 Free space : 24 bytes
+;			ABS function works
+;			RND function currently does nothing
+;			need to make implementation of RND
+;			that fits in 17 bytes
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -360,11 +365,11 @@ ExpEvaluateNum:
 	DB SubSub&0xff,(ExpNegate&0ffh)-1
 	
 	; last function
-	CPI AbsSub&0ffh
+	CPI (RndSub+1)&0ffh
 	RNC ; if its greater than this, its an error
 	; first function
-	CPI UsrSub&0ffh
-	JNC FunctionCall ; between UsrSub and AbsSub
+	CPI AbsSub&0ffh
+	JNC FunctionCall ; between RndSub and AbsSub
 	
 	; can't use RST_CompareJump below
 	; because it doesn't preserve Carry after
@@ -394,6 +399,7 @@ ExpInteger: ; Z is set on jump to here
 	CZ GetDEatBC
 	
 	db 21h; LXI H opcode to eat 2 bytes
+				; 3rd byte is NOP
 ExpLeftBrace:
 	CALL ExpBracketed
 	
@@ -462,17 +468,6 @@ ExpNegate:
 	
 	JMP ExpEvaluateNum 
 
-FunctionCall:
-	; push return addrrss
-	LXI D,ExpEvaluateOp
-	PUSH D
-	; A contains the address to call on page 2
-	; push function address
-	MOV L,A
-	MVI H,PrintSub/256
-	PUSH H
-	
-	JMP ExpBracketed
 
 PrintSubString:
 	CALL OutputString ; carry is clear on return
@@ -534,9 +529,7 @@ GetVarLocation:
 	
 	; fall through if it is array var
 	
-	LDAX B
-	INX B
-	CALL ExpBracketed
+	CALL ExpBracketedB
 	
 	; Now DE contains the array index
 	; Add it twice to get the offset
@@ -561,6 +554,22 @@ OutputString:
 	JNZ OutputStringLoop
 	INX B
 	RET
+
+FunctionCall:
+	; push return addrrss
+	LXI D,ExpEvaluateOp
+	PUSH D
+	; A contains the address to call on page 2
+	; push function address
+	MOV L,A
+	MVI H,PrintSub/256
+	PUSH H
+	
+	; fall through
+
+ExpBracketedB:
+	LDAX B
+	INX B
 	
 ; This must be before Error so that it
 ; can fall through
@@ -836,14 +845,32 @@ PrintIntegerLoop2:
 
 List_String:
 	CALL OutputString_WithQuote
-	RST_PutChar
-	RET
 
+	DB 011h ; LXI D skips 2 bytes, then
+					; opcode 64 is MOV B,B
 List_Var:
   INX B
   ADI '@'
   RST_PutChar
   RET
+
+; TODO above if we could make sure Z is not
+; set on call to List_Integer, then GetDEatBC
+; could be inlined with RZ at the end, saving
+; 3 bytes
+
+; This 8 byte routine can be moved anywhere in
+; memory to fill holes
+GetDEatBC_INXB:
+	INX B
+GetDEatBC:
+	LDAX B
+	MOV E,A
+	INX B
+	LDAX B
+	MOV D,A
+	INX B
+	RET
 
 ; Index to subroutine address must not overlap with other tokens
 ; Currently TokenList starts toward the end
@@ -892,12 +919,12 @@ TokenList:
 ; before operators are non-statement
 ; non-operator tokens
 
+	DB AbsSub&0ffh
+	DB "AB",'S'+128
 	DB UsrSub&0ffh
 	DB "US",'R'+128
 	DB RndSub&0ffh
 	DB "RN",'D'+128
-	DB AbsSub&0ffh
-	DB "AB",'S'+128
 	
 	DB ToToken&0ffh
 	DB "T",'O'+128
@@ -1144,10 +1171,11 @@ NewSub:
 	RST 0
 
 AbsSub:
-	MOV A,D ; TODO save one byte once address of
-				  ; AbsSub is fixed using XRA D
-	ORA A
-	RP
+	; A = right brace token, which has high biy
+	; set, so no need to negate DE if XRA with D
+	; still leaves high bit set
+	XRA D
+	RM
 	RST_NegateDE
 	RET
 	
@@ -1647,16 +1675,8 @@ InputSubImpl:
 	RST_ExpEvaluate
 	POP B
 	JMP AssignToVarPOPH
+	
+	; TODO AssignToVarPOPH could be moved here
+	; to save 2 bytes on page 2 (and move them to
+	; here)
 
-; This 8 byte routine can be moved anywhere in
-; memory to fill holes
-GetDEatBC_INXB:
-	INX B
-GetDEatBC:
-	LDAX B
-	MOV E,A
-	INX B
-	LDAX B
-	MOV D,A
-	INX B
-	RET
