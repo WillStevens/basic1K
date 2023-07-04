@@ -176,6 +176,10 @@
 ;			RND function currently does nothing
 ;			need to make implementation of RND
 ;			that fits in 17 bytes
+; 2023-07-04 Free space : 20 bytes
+;			Implemented simple lookup-based RND
+;			replaced newline RST with LDAX B, INX B
+;			saved a few bytes in LIST
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -223,6 +227,8 @@ PROG_PTR:
 	DW 0
 PROG_PARSE_PTR:
 	DW 0
+RNG_PTRS:
+	DW 0
 
 PROG_BASE:
 
@@ -252,15 +258,16 @@ ORG 08h
 	
 	; 1 bytes free
 	
-.macro RST_NewLine
+.macro RST_LDAXB_INXB
 RST 2
 .endm
 ORG 10h
-NewLine:
 	
-	MVI A,10
+	LDAX B
+	INX B
+	RET
 
-	; 6 bytes free
+	; 5 bytes free
 	
 	; fall through
 
@@ -356,8 +363,7 @@ ExpEvaluate:
 ExpEvaluateNum:
 	; Expecting ( var integer or - sign
 	; or function call
-	LDAX B
-	INX B
+	RST_LDAXB_INXB
 	
 	RST_CompareJump
 	DB LeftBraceToken&0ffh,(ExpLeftBrace&0ffh)-1
@@ -384,7 +390,6 @@ ExpEvaluateNum:
 	; Fall through to ExpVar
 ExpVar:
 	CALL GetVarLocation
-	
 ExpVarGetValue:
 	MOV E,M
 	INX H
@@ -502,12 +507,12 @@ PrintSubImpl:
 	; last one was a comma
 	POP PSW
 	RC ; return without newline if it was comma
-	RST_Newline
+	MVI A,10
+	RST_PutChar
 	RET
 
 GetVarLocationBVar:
-	LDAX B
-	INX B
+	RST_LDAXB_INXB
 	
 GetVarLocation:
 ; A should contain a var token
@@ -538,25 +543,25 @@ GetVarLocation:
 	INX H ; up 1 byte to avoid EndProgram marker
 	DAD D
 	DAD D
-	
+
+OutputStringRet: ; shared code, nearest RET
 	RET
-	
+
 ; This 9 byte routine can be moved anywhere to
 ; fill holes
-OutputStringLoop:
-OutputString_WithQuote:
-	RST_PutChar
 OutputString:
 ;Pointer in B points to string token marker
 	INX B
-	LDAX B
-	CPI StringToken
-	JNZ OutputStringLoop
-	INX B
-	RET
+OutputStringLoop:
+	RST_LDAXB_INXB
+	RST_CompareJump
+	DB StringToken,(OutputStringRet&0ffh)-1
+OutputString_WithQuote:
+	RST_PutChar
+	JMP OutputStringLoop
 
 FunctionCall:
-	; push return addrrss
+	; push return address
 	LXI D,ExpEvaluateOp
 	PUSH D
 	; A contains the address to call on page 2
@@ -568,8 +573,7 @@ FunctionCall:
 	; fall through
 
 ExpBracketedB:
-	LDAX B
-	INX B
+	RST_LDAXB_INXB
 	
 ; This must be before Error so that it
 ; can fall through
@@ -579,8 +583,7 @@ ExpBracketed:
 
 	RST_ExpEvaluate
 	
-	LDAX B
-	INX B
+	RST_LDAXB_INXB
 	
 	CPI RightBraceToken&0ffh
 	RZ
@@ -589,13 +592,15 @@ ExpBracketed:
 
 ;Display error code and go back to line entry
 Error:
-	RST_NewLine
+	MVI A,10
+	RST_PutChar
 	MVI A,'E'
 	RST_PutChar
 	POP D
 	CALL PrintInteger
 NewLineReady:
-	RST_NewLine
+	MVI A,10
+	RST_PutChar
 	
 	; fall through
 	
@@ -751,7 +756,7 @@ ListLoop:
 	MVI A,' '
 	RST_PutChar
 	
-	LDAX B
+	RST_LDAXB_INXB
 	CPI EndProgram&0ffh
 	RZ
 	
@@ -798,14 +803,14 @@ List_Token_String_Loop:
   INX H
   JP List_Token_String_Loop
   
-  INX B
   RET
   
 List_LineNum:
-	RST_NewLine
+	MVI A,10
+	RST_PutChar
  
 List_Integer:
-  CALL GetDEatBC_INXB
+  CALL GetDEatBC
  
  	; fall through to PrintInteger
  	
@@ -846,10 +851,8 @@ PrintIntegerLoop2:
 List_String:
 	CALL OutputString_WithQuote
 
-	DB 011h ; LXI D skips 2 bytes, then
-					; opcode 64 is MOV B,B
+	DB 011h ; LXI D skips 2 bytes
 List_Var:
-  INX B
   ADI '@'
   RST_PutChar
   RET
@@ -859,17 +862,15 @@ List_Var:
 ; could be inlined with RZ at the end, saving
 ; 3 bytes
 
-; This 8 byte routine can be moved anywhere in
+; This 6 byte routine can be moved anywhere in
 ; memory to fill holes
 GetDEatBC_INXB:
 	INX B
 GetDEatBC:
-	LDAX B
+	RST_LDAXB_INXB
 	MOV E,A
-	INX B
-	LDAX B
+	RST_LDAXB_INXB
 	MOV D,A
-	INX B
 	RET
 
 ; Index to subroutine address must not overlap with other tokens
@@ -969,30 +970,17 @@ PrintSub:
 
 LetSub:
 	CALL GetVarLocationBVar
-	
 	PUSH H
 	
 	; Test that we have an equals sign
-	LDAX B
+	RST_LDAXB_INXB
+	
 	CPI EqualSub&0ffh
 	CNZ Error
 	
-	INX B
-	
 LetSubEvaluate:
 	RST_ExpEvaluate
-
-AssignToVarPOPH:
-	POP H
-	
-AssignToVar:
-	; Put DE into var (HL)
-	
-	MOV M,E
-	INX H
-	MOV M,D
-	
-	RET
+	JMP AssignToVarPOPH
 	
 GosubSub:
 	RST_ExpEvaluate
@@ -1007,6 +995,9 @@ GotoSub:
 	CALL GetLineNum
 	RZ
 	CALL Error
+	; TODO in place of call error, is there
+	; a two or three byte inst that will
+	; cause C to be set when DAD SP is called below?
 	
 ReturnSub:
 	; Expect stack size to be 6 or more
@@ -1050,8 +1041,8 @@ ForSub:
 	
 	PUSH H ; stack contains var addr + 1 (VL+1)
 	
-	LDAX B
-	INX B
+	RST_LDAXB_INXB
+	
 	CPI ToToken&0ffh
 	CNZ Error
 	
@@ -1160,6 +1151,15 @@ ExecuteDirect:
 	; page as PrintSub so that we don't have to
 	; update H
 
+	; TODO - could inc H if L is less than
+	; QuestionMarkSub so that page 3 could be used
+	; costs 5 bytes but if it saves more than
+	; one jump to IMPL it is worth it
+	;CPI QuestionMarkToken0ffh
+	;ADC H
+	;SUB L
+	;MOV H,A
+
 	; Jump to it
 	; Carry is clear when we do this
 	PCHL
@@ -1171,7 +1171,7 @@ NewSub:
 	RST 0
 
 AbsSub:
-	; A = right brace token, which has high biy
+	; A = right brace token, which has high bit
 	; set, so no need to negate DE if XRA with D
 	; still leaves high bit set
 	XRA D
@@ -1182,14 +1182,27 @@ AbsSub:
 UsrSub:
 	XCHG
 	PCHL
-	
+
+; TODO - check this is at an odd address
+; This address is used to increment RNG_PTRS
+; (any odd number will do)
+
+; TODO - this won't have a good distribution,
+; but could be improved by XORing with a counter
+; that has period 2^16-1, and it would
+; also give the RNG a longer period
 RndSub:
-	; could be:
-	; have two pointers into program code
-	; get value from each, increment each by
-	; two prime numbers sized about 150
+	XCHG
+	LHLD RNG_PTRS
+	DAD D
+	SHLD RNG_PTRS
+	XCHG
 	
-	db 0,0,0,0,0 ; assume it will be at least 5 bytes
+	MOV L,E
+	MOV E,M
+	MOV L,D
+	MOV D,M
+	
 	RET
 	
 ; ( ) , TO STEP tokens must have values between 
@@ -1220,7 +1233,7 @@ GTESub:
 	RAL
 	
 	DB 11h; LXi D opcode to swallow next byte
-	
+
 EqualSub:
 	RST_CompareHLDE ; returns Z iff HL=DE
 	CMC
@@ -1344,8 +1357,7 @@ GetLineNumLoop:
 	INX B
 	
 	; Test for DE <= (BC), and return if true
-	LDAX B
-	INX B
+	RST_LDAXB_INXB
 	SUB E
 	MOV L,A
 	LDAX B
@@ -1365,8 +1377,7 @@ ATNLN_RetNZ: ; shared code. Returns NZ if we know
 	RET
 
 ATNLN_String:
-	LDAX B
-	INX B
+	RST_LDAXB_INXB
 	CPI StringToken
 	JNZ ATNLN_String
 	
@@ -1438,7 +1449,7 @@ NextCharLoop:
   ; Do we have the same class as before?
   PUSH H
 	MVI L,(ClassLookup&0ffh)-1
-	LookupClassLoop:
+LookupClassLoop:
 	INR L
 	CMP M
 	INR L
@@ -1552,7 +1563,7 @@ AlphaClass:
 	; good, this ensures no spurious
 	; strcmp matches
 	
-	; now we nerd to decide whether to jump to:
+	; now we need to decide whether to jump to:
 	; FreshStart - if its the last quote in
 	;							 a string
 	; NLTest		 - if part way through string or 
@@ -1642,27 +1653,9 @@ DB 0,FreshStart&0ffh
 
 ; This must be on page 3
 InputSubImpl:
-; 18 bytes
+; 20 bytes
 	; TODO
-	; does cost of calling GetLine means
-	; that it js better to read and test chars 
-	; directly, and turn *10 into a subroutine
-	; can also make use of classlookup
-	; subroutine
-	; seems not worth doing
-	; PUSH B
-	;InputLoop:
-	; CALL GetCharAndClass ; 3
-	; MVI A,DigitClass ; 2
-	; CMP C						 ; 1
-	; CNZ Error 			 ; 3
-	; 
-	; XRA A				 ; 1
-	; CALL Mul10Acc ; 2
-	; JMP InputLoop ; 2
-	
-	; POP B
-	
+
 	CALL GetVarLocationBVar
 	PUSH H
 	PUSH B
@@ -1674,9 +1667,15 @@ InputSubImpl:
 	
 	RST_ExpEvaluate
 	POP B
-	JMP AssignToVarPOPH
+AssignToVarPOPH:
+	POP H
 	
-	; TODO AssignToVarPOPH could be moved here
-	; to save 2 bytes on page 2 (and move them to
-	; here)
+AssignToVar:
+	; Put DE into var (HL)
+	
+	MOV M,E
+	INX H
+	MOV M,D
+	
+	RET
 
