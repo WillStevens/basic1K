@@ -180,7 +180,9 @@
 ;			Implemented simple lookup-based RND
 ;			replaced newline RST with LDAX B, INX B
 ;			saved a few bytes in LIST
-;
+; 2023-07-05 Free space : 11 bytes
+;			Implemented XORSHIFT RND function
+
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
 ; 1K RAM from 0400h-07FFh
@@ -192,6 +194,7 @@ RAM_TOP equ 0800h ; 1 more than top byte of RAM
 
 ; IntegerToken must be one more than last var
 IntegerToken equ 32 ; followed by 16-bit integer
+QuestionMarkToken equ 33
 StringToken equ 34 ; followed by string, followed by end quote
 
 ; Callable tokens are low byte of subroutine to call
@@ -227,8 +230,8 @@ PROG_PTR:
 	DW 0
 PROG_PARSE_PTR:
 	DW 0
-RNG_PTRS:
-	DW 0
+RNG_SEED:
+	DW 1 ; TODO initialise this in code
 
 PROG_BASE:
 
@@ -266,10 +269,19 @@ ORG 10h
 	LDAX B
 	INX B
 	RET
-
-	; 5 bytes free
 	
-	; fall through
+AssignToVarPOPH:
+	POP H
+	
+AssignToVar:
+	; Put DE into var (HL)
+	
+	MOV M,E
+	INX H
+	MOV M,D
+	
+	RET
+	
 
 .macro RST_PutChar
 RST 3
@@ -381,30 +393,31 @@ ExpEvaluateNum:
 	; because it doesn't preserve Carry after
 	; comparison.
 	CPI IntegerToken
-	JZ ExpInteger
+	JC ExpVar
 	
 	; Integer token is one more than last var
 	; token so if carry is set then it is a var
-	RNC : return with carry clear if error
+	
+	RNZ : return with carry clear if error
 
-	; Fall through to ExpVar
+	; Fall through to ExpInteger
+ExpInteger:
+	MOV H,B
+	MOV L,C
+	
+	; fall through with carry clear
 ExpVar:
-	CALL GetVarLocation
+	; carry set if jumped to here
+	
+	CC GetVarLocation
 ExpVarGetValue:
 	MOV E,M
 	INX H
 	MOV D,M
 	
-	; fall through to ExpEvaluateOp
-	; A will not ever be 255 at tbis point,
-	; so INR A ensures Z is not set
-	INR A 
-
-ExpInteger: ; Z is set on jump to here
-	CZ GetDEatBC
-	
 	db 21h; LXI H opcode to eat 2 bytes
 				; 3rd byte is NOP
+
 ExpLeftBrace:
 	CALL ExpBracketed
 	
@@ -641,7 +654,11 @@ Ready:
 	
 LineStartsWithInt:
 	; Get the line number into DE
-	CALL GetDEatBC_INXB
+	INX B
+	RST_LDAXB_INXB
+	MOV E,A
+	RST_LDAXB_INXB
+	MOV D,A
 	
 	; Is it an integer all by itself? 
 	; If so then delete the line
@@ -810,8 +827,10 @@ List_LineNum:
 	RST_PutChar
  
 List_Integer:
-  CALL GetDEatBC
- 
+  RST_LDAXB_INXB
+	MOV E,A
+	RST_LDAXB_INXB
+	MOV D,A
  	; fall through to PrintInteger
  	
 ;Output the value in DE
@@ -857,34 +876,19 @@ List_Var:
   RST_PutChar
   RET
 
-; TODO above if we could make sure Z is not
-; set on call to List_Integer, then GetDEatBC
-; could be inlined with RZ at the end, saving
-; 3 bytes
-
-; This 6 byte routine can be moved anywhere in
-; memory to fill holes
-GetDEatBC_INXB:
-	INX B
-GetDEatBC:
-	RST_LDAXB_INXB
-	MOV E,A
-	RST_LDAXB_INXB
-	MOV D,A
-	RET
-
 ; Index to subroutine address must not overlap with other tokens
 ; Currently TokenList starts toward the end
 ; of page 1, and DivSub begins towards the end
 ; of page 2 and the subroutine extends into page 2
 
 ; order in this list must make sure that a
-; token A that is a left subatring of another
+; token A that is a left substring of another
 ; token B appears later in the list than B
 ; e.g. < is after <=
 
-	DB 128 ; Having tbis here saves 2 bytes in 
-				 ; List subroutine
+	; 3 bytes free here
+	DB 0,0,0
+	
 TokenList:
 	DB QuestionMarkToken&0ffh
 	DB '?'+128
@@ -957,7 +961,6 @@ TokenList:
 	DB '*'+128
 	DB DivSub&0ffh
 	DB '/'+128
-QuestionMarkToken:
 	DB 255 ; 255 can only occur at the end
 	
 LineNumSub:
@@ -981,7 +984,7 @@ LetSub:
 LetSubEvaluate:
 	RST_ExpEvaluate
 	JMP AssignToVarPOPH
-	
+
 GosubSub:
 	RST_ExpEvaluate
 	
@@ -1019,18 +1022,30 @@ IfSub:
 	; If DE zero then fall through to next line
 	JMP AdvanceToNextLineNum ; could be JZ
 													 ; not on same page
-
-InputSub:
-	JMP InputSubImpl
-	
-EndProgram equ InputSub+2
-	; because InputSubImpl is on page 3 this
-	; 3rd byte of JMP  is just an INX B instruction
-
-	; fall through
 	
 EndSub:
 	JMP NewLineReady
+
+; last byte of JMP AdvanceToNedtLineNum
+; is 3, which is opcode for INX B, which
+; has no edfect before JMP NewLineReady
+EndProgram equ EndSub-1
+
+InputSub:
+; 20 bytes
+
+	CALL GetVarLocationBVar
+	PUSH H
+	PUSH B
+	
+	LXI H,INPUT_BUFFER
+	PUSH H
+	CALL GetLine
+	POP B
+	
+	RST_ExpEvaluate
+	POP B
+	JMP AssignToVarPOPH
 
 ForSub:
 	POP H ; discard return address
@@ -1125,16 +1140,21 @@ ExecuteProgramLoop:
 	; Check that it is a token less than
 	; ExecuteProgram
 	CPI ExecuteProgram&0ffh
-	CNC Error
+	
+	; if it's less than ExecuteProgram then it 
+	; is also less tban NewSub, so skip over 
+	; two bytes
+	
+	DB 11h ; opcode for LXI D
 	
 ExecuteDirect:
-
-	INX B
 	
 	; Check that it is a token between
 	; LinenumSub and NewSub
 	CPI (NewSub+1)&0ffh
 	CNC Error
+	
+	INX B
 
 	CPI LineNumSub&0ffh
 	CC Error
@@ -1183,27 +1203,11 @@ UsrSub:
 	XCHG
 	PCHL
 
-; TODO - check this is at an odd address
-; This address is used to increment RNG_PTRS
-; (any odd number will do)
+; XORSHIFT taken from here
+; https://wikiti.brandonw.net/index.php?title=Z80_Routines:Math:Random
 
-; TODO - this won't have a good distribution,
-; but could be improved by XORing with a counter
-; that has period 2^16-1, and it would
-; also give the RNG a longer period
 RndSub:
-	XCHG
-	LHLD RNG_PTRS
-	DAD D
-	SHLD RNG_PTRS
-	XCHG
-	
-	MOV L,E
-	MOV E,M
-	MOV L,D
-	MOV D,M
-	
-	RET
+	JMP RndSubImpl
 	
 ; ( ) , TO STEP tokens must have values between 
 ; keywords and operators
@@ -1291,10 +1295,9 @@ DivideHL:
 ;Divide HL by DE
 
 	; Make HL and DE different signs
-MOV A,H
-XRA D
-PUSH PSW
-CP NegateDE
+  MOV A,H
+  CALL AbsSub
+	PUSH PSW
 	
 ;Divide HL by DE
 ;Assuming that HL and DE are different signs
@@ -1649,33 +1652,33 @@ DB 34,QuoteClass&0ffh
 DB 33,LT0Class&0ffh
 DB 0,FreshStart&0ffh
 
+RndSubImpl:
+	LHLD RNG_SEED
+	MOV A,H
+  RAR
+  MOV A,L
+  RAR
+  XRA H
+  MOV H,A
+  MOV A,L
+  RAR
+  MOV A,H
+  RAR
+  XRA L
+  MOV L,A
+  XRA H
+  MOV H,A
+  SHLD RNG_SEED
+  
+  ; H is not zero so carry will be clear
+  ; after this
+  DCX H 
+  MOV A,H
+  RAR
+  MOV H,A
+  
+  CALL DivideHL
+  XCHG
+  RET
 
-
-; This must be on page 3
-InputSubImpl:
-; 20 bytes
-	; TODO
-
-	CALL GetVarLocationBVar
-	PUSH H
-	PUSH B
-	
-	LXI H,INPUT_BUFFER
-	PUSH H
-	CALL GetLine
-	POP B
-	
-	RST_ExpEvaluate
-	POP B
-AssignToVarPOPH:
-	POP H
-	
-AssignToVar:
-	; Put DE into var (HL)
-	
-	MOV M,E
-	INX H
-	MOV M,D
-	
-	RET
 
