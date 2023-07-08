@@ -182,6 +182,7 @@
 ;			saved a few bytes in LIST
 ; 2023-07-05 Free space : 11 bytes
 ;			Implemented XORSHIFT RND function
+; 2023-07-08 Free space: 10 bytes
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -404,6 +405,8 @@ ExpEvaluateNum:
 ExpInteger:
 	MOV H,B
 	MOV L,C
+	INX B
+	INX B
 	
 	; fall through with carry clear
 ExpVar:
@@ -573,6 +576,8 @@ OutputString_WithQuote:
 	RST_PutChar
 	JMP OutputStringLoop
 
+;TODO ExpLeftBrace could come to here
+; and DCX B placed here
 FunctionCall:
 	; push return address
 	LXI D,ExpEvaluateOp
@@ -886,8 +891,6 @@ List_Var:
 ; token B appears later in the list than B
 ; e.g. < is after <=
 
-	; 3 bytes free here
-	DB 0,0,0
 	
 TokenList:
 	DB QuestionMarkToken&0ffh
@@ -914,12 +917,13 @@ TokenList:
 	DB "NEX",'T'+128
 	
 ; Before this are keywords allowed at run-time
-	DB ExecuteProgram&0ffh
-	DB "RU",'N'+128
 	DB ListSub&0ffh
 	DB "LIS",'T'+128
 	DB NewSub&0ffh
 	DB "NE",'W'+128
+	DB ExecuteProgram&0ffh
+	DB "RU",'N'+128
+	
 	
 ; before operators are non-statement
 ; non-operator tokens
@@ -1124,9 +1128,13 @@ NextSub:
 	DAD SP
 	SPHL
 	
-	DCR B
-	DB 21h ; opcode for LXI H eats 2 bytes
-				 ; third byte is INR B
+	JMP ExecuteProgramLoop
+
+ListSub:
+  JMP ListSubImpl
+
+NewSub:
+	RST 0
 	
 ExecuteProgram:
 	
@@ -1138,11 +1146,11 @@ ExecuteProgramLoop:
 	LDAX B
 
 	; Check that it is a token less than
-	; ExecuteProgram
-	CPI ExecuteProgram&0ffh
+	; ListSub
+	CPI ListSub&0ffh
 	
-	; if it's less than ExecuteProgram then it 
-	; is also less tban NewSub, so skip over 
+	; if it's less than ListSub then it 
+	; is also less tban ExecuteProgram, so skip over 
 	; two bytes
 	
 	DB 11h ; opcode for LXI D
@@ -1150,8 +1158,8 @@ ExecuteProgramLoop:
 ExecuteDirect:
 	
 	; Check that it is a token between
-	; LinenumSub and NewSub
-	CPI (NewSub+1)&0ffh
+	; LinenumSub and ExecuteProgram
+	CPI (ExecuteProgram+1)&0ffh
 	CNC Error
 	
 	INX B
@@ -1184,11 +1192,14 @@ ExecuteDirect:
 	; Carry is clear when we do this
 	PCHL
 
-ListSub:
-  JMP ListSubImpl
+; ( ) , TO STEP tokens must have values between 
+; statements and functions
 
-NewSub:
-	RST 0
+ToToken equ ExecuteProgram+1
+StepToken equ ExecuteProgram+2
+LeftBraceToken equ ExecuteProgram+3
+RightBraceToken equ ExecuteProgram+4
+CommaToken equ ExecuteProgram+5
 
 AbsSub:
 	; A = right brace token, which has high bit
@@ -1208,15 +1219,6 @@ UsrSub:
 
 RndSub:
 	JMP RndSubImpl
-	
-; ( ) , TO STEP tokens must have values between 
-; keywords and operators
-
-ToToken equ RndSub+1
-StepToken equ RndSub+2
-LeftBraceToken equ RndSub+3
-RightBraceToken equ RndSub+4
-CommaToken equ RndSub+5
 
 ; Token values >= this are all operators
 Operators:
@@ -1666,16 +1668,16 @@ RndSubImpl:
   RAR
   XRA L
   MOV L,A
-  XRA H
+  XRA H ; cleara carry
   MOV H,A
   SHLD RNG_SEED
   
-  ; H is not zero so carry will be clear
-  ; after this
-  DCX H 
-  MOV A,H
+  ; carry is clear at this point
   RAR
   MOV H,A
+  
+  ; above 2 bytes give us a value between
+  ; 0 and 32767
   
   CALL DivideHL
   XCHG
