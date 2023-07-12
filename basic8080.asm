@@ -1052,13 +1052,15 @@ InputSub:
 	JMP AssignToVarPOPH
 
 ForSub:
-	POP H ; discard return address
-				; we know where to return to,
-				; and stack shuffling costs too much
+	; Stack contains return address:
+	; ExecuteProgramLoop - EPL
+	; Keep it there even though it isn't used by 
+	; ForSub, it will be used by NextSub
+	
 	; First part is just like let statement
 	CALL LetSub
 	
-	PUSH H ; stack contains var addr + 1 (VL+1)
+	PUSH H ; stack has var addr + 1 (VL+1), EPL
 	
 	RST_LDAXB_INXB
 	
@@ -1068,7 +1070,7 @@ ForSub:
 	RST_ExpEvaluate
 	RST_NegateDE
 	
-	PUSH D ; stack contains -T,VL+1
+	PUSH D ; stack contains -T,VL+1, EPL
 				 ; T is target
 				 
 	LXI D,1
@@ -1086,17 +1088,17 @@ ForWithStep:
 	INX SP
 	INX SP
 	POP H
-	PUSH B	; stack contains -T,LS
+	PUSH B	; stack contains -T,LS,EPL
 	DCX SP
 	DCX SP
-	PUSH D	; stack contains S,-T,LS
-	PUSH H ; stack contains VL+1,S,-T,LS
+	PUSH D	; stack contains S,-T,LS,EPL
+	PUSH H ; stack contains VL+1,S,-T,LS,EPL
 	
 	JMP ExecuteProgramLoop
 	
 NextSub:
 	POP H ; discard return address
-	; stack contains VL+1,S,-T,LS
+	; stack contains VL+1,S,-T,LS,EPL
 	POP H	; get VL+1
 	MOV D,M
 	DCX H
@@ -1114,22 +1116,27 @@ NextSub:
 	
 	POP H		; skip over step on stack
 	POP H		; get -T
-	DCX H
+	DCX H		; H has -(T+1)
 	
-	DAD D 	; HL now has LV-T
-					; carry is set if LV>=T
+	DAD D 	; HL now has LV-(T+1)
+					; carry is set if LV>=(T+1)
+					
+	; TODO look for mismatch between 
+	; carry and hi bit of step, which can be
+	; popped into A above
 	
 	POP H ; this is LoopStart
-	JC ExecuteProgramLoop
+	
+	RC
 	
 	MOV B,H
 	MOV C,L
-	LXI H,-8
+	LXI H,-10
 	DAD SP
 	SPHL
 	
-	JMP ExecuteProgramLoop
-
+	RET
+	
 ListSub:
   JMP ListSubImpl
 
