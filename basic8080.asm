@@ -183,6 +183,9 @@
 ; 2023-07-05 Free space : 11 bytes
 ;			Implemented XORSHIFT RND function
 ; 2023-07-08 Free space: 10 bytes
+; 2023-07-12 Free space: 15 bytes
+;			Fixed forgotten issue where STEP in FOR
+;			loop didn't work if negative
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -418,12 +421,6 @@ ExpVarGetValue:
 	INX H
 	MOV D,M
 	
-	db 21h; LXI H opcode to eat 2 bytes
-				; 3rd byte is NOP
-
-ExpLeftBrace:
-	CALL ExpBracketed
-	
 	; fall through to ExpEvaluateOp
 	
 ExpEvaluateOp:
@@ -576,8 +573,8 @@ OutputString_WithQuote:
 	RST_PutChar
 	JMP OutputStringLoop
 
-;TODO ExpLeftBrace could come to here
-; and DCX B placed here
+ExpLeftBrace:
+	DCX B
 FunctionCall:
 	; push return address
 	LXI D,ExpEvaluateOp
@@ -891,6 +888,7 @@ List_Var:
 ; token B appears later in the list than B
 ; e.g. < is after <=
 
+db 0,0,0 ; 3 bytes free
 	
 TokenList:
 	DB QuestionMarkToken&0ffh
@@ -1019,13 +1017,12 @@ ReturnSub:
 
 IfSub:
 	RST_ExpEvaluate
-	MOV A,E
-	ORA D
+	MOV A,D
+	ORA E
 	RNZ
 
 	; If DE zero then fall through to next line
-	JMP AdvanceToNextLineNum ; could be JZ
-													 ; not on same page
+	JMP AdvanceToNextLineNum 
 	
 EndSub:
 	JMP NewLineReady
@@ -1114,23 +1111,31 @@ NextSub:
 	INX H		; H = VL+1
 	MOV M,D	
 	
-	POP H		; skip over step on stack
+	POP PSW ; get step so that hi bit of A has
+					; sign of step
 	POP H		; get -T
-	DCX H		; H has -(T+1)
 	
-	DAD D 	; HL now has LV-(T+1)
-					; carry is set if LV>=(T+1)
+	DAD D 	; HL now has LV-T
+	
+	XRA H		; xor sign of step with
+					; sign of result
+	
+					; if result of xor above is 1
+					; then keep looping, or if HL
+					; is zero then keep looping
 					
-	; TODO look for mismatch between 
-	; carry and hi bit of step, which can be
-	; popped into A above
+	POP D ; this is LoopStart
 	
-	POP H ; this is LoopStart
+	JM NextSubLoop
 	
-	RC
+	MOV A,H
+	ORA L
+	RNZ
 	
-	MOV B,H
-	MOV C,L
+NextSubLoop:
+	
+	MOV B,D
+	MOV C,E
 	LXI H,-10
 	DAD SP
 	SPHL
@@ -1204,9 +1209,8 @@ ExecuteDirect:
 
 ToToken equ ExecuteProgram+1
 StepToken equ ExecuteProgram+2
-LeftBraceToken equ ExecuteProgram+3
-RightBraceToken equ ExecuteProgram+4
-CommaToken equ ExecuteProgram+5
+RightBraceToken equ ExecuteProgram+3
+CommaToken equ ExecuteProgram+4
 
 AbsSub:
 	; A = right brace token, which has high bit
@@ -1215,6 +1219,12 @@ AbsSub:
 	XRA D
 	RM
 	RST_NegateDE
+	
+	; shared code. okay for this to go here
+	; because in ExpEvaluateNum, test for
+	; left brace is before test for token
+	; between first and last function
+LeftBraceToken:
 	RET
 	
 UsrSub:
