@@ -186,7 +186,13 @@
 ; 2023-07-12 Free space: 15 bytes
 ;			Fixed forgotten issue where STEP in FOR
 ;			loop didn't work if negative
-
+; 2023-07-13 Free space: 13 bytes
+;			Extended variable range up to 32
+;			So that user has 31 variables and array
+;			var 30 can be used to work out
+;			remaining memory
+;			var 31 is RNG seed
+;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
 ; 1K RAM from 0400h-07FFh
@@ -227,11 +233,18 @@ ORG 0400h
 
 ; this must be on a 256 byte boundary
 VAR_SPACE:
-	DW 0,0,0,0,0,0,0,0,0,0,0,0,0
-	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0
-	
+	; 30 words, first of which is not
+	; accessible to user, so can be
+	; used for PROG_PTR
 PROG_PTR:
 	DW 0
+	
+	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	DW 0
+	
+	; 2 words accessible to user as variables
+	; 30 and 31
 PROG_PARSE_PTR:
 	DW 0
 RNG_SEED:
@@ -536,7 +549,7 @@ GetVarLocation:
 ; A will never be 255 on return
 
 	; Test that we have a var
-	CPI 27
+	CPI 32
 	CNC Error
 	
 	MVI H,VAR_SPACE/256
