@@ -192,6 +192,16 @@
 ;			var 30 can be used to work out
 ;			remaining memory
 ;			var 31 is RNG seed
+; 2023-07-15 Noticed bug where -32768 isn't
+;     displayed
+; 2023-07-15 When playing REVERSE, saw corrupted
+;			array, which implies that bug where stack 
+;			continually growing
+; 2023-07-16 Above two issues fixed. Former
+;     required change to PrintInteger. Latter
+;			was due to a GOTO from within FOR loop,
+;			in REVERSE and not necessarily a problem
+;			with this interpreter
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -249,6 +259,8 @@ PROG_PARSE_PTR:
 	DW 0
 RNG_SEED:
 	DW 1 ; TODO initialise this in code
+			 ; it can't be zero
+			 
 
 PROG_BASE:
 
@@ -712,6 +724,7 @@ LineStartsWithInt:
 	DB (Entry&0ffh)-1
 
 DeleteProgramLine:
+; 25 bytes
 	PUSH H
 	CALL GetLineNum
 	POP H
@@ -745,6 +758,7 @@ Entry:
 	SHLD PROG_PTR
 	
 MemoryRotate:
+; 27 bytes
 ; stack must contain (from top down)
 ; first, middle, first, last
 ; DE = middle
@@ -850,13 +864,15 @@ List_Integer:
  	
 ;Output the value in DE
 PrintInteger:
-	XRA A		; end marker is zero flag
-	PUSH PSW
+	XRA A
+	PUSH PSW			; end marker is Z flag
 	
-	ORA D
+	ORA D			; S is set if -ve
+	RST_NegateDE
+	
 	JP PrintIntegerLoop
 	MVI A,'-'
-	RST_PutChar
+	RST_Putchar
 	RST_NegateDE
 	
 PrintIntegerLoop:
@@ -867,8 +883,9 @@ PrintIntegerLoop:
 	; HL contains remainder after / 10
 	; DE contains the quotient
 
-	MOV H,L
-	PUSH H	; push onto stack
+	MVI A,'0'
+	SUB L
+	PUSH PSW ; push onto stack
 	
 	; if DE is zero we are done
 	MOV A,D
@@ -878,7 +895,6 @@ PrintIntegerLoop:
 PrintIntegerLoop2:
 	POP PSW
 	RZ
-	ADI '0'
 	RST_PutChar
 	JMP PrintIntegerLoop2 ; could be JNZ
 
@@ -901,7 +917,7 @@ List_Var:
 ; token B appears later in the list than B
 ; e.g. < is after <=
 
-db 0,0,0 ; 3 bytes free
+db 0,0 ; 2 bytes free
 	
 TokenList:
 	DB QuestionMarkToken&0ffh
