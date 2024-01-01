@@ -202,6 +202,8 @@
 ;			was due to a GOTO from within FOR loop,
 ;			in REVERSE and not necessarily a problem
 ;			with this interpreter
+; 2024-01-01 Fixed bug where parse error wasn't 
+;     displayed as ? during LIST
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -794,7 +796,11 @@ ReverseLoop:
 	INX D
 	
 	JMP ReverseLoop
-	
+
+db 0,0 ; 2 bytes free
+			 ; positioned here so that TokenList
+			 ; starts in the right place
+
 ; List statement implementation
 ListSubImpl:
 	LXI B,PROG_BASE
@@ -809,7 +815,7 @@ ListLoop:
   LXI H,ListLoop	; so that we can loop using RET
   PUSH H
 
-	LXI H,TokenList
+	LXI H,TokenList-1
 
 	; These need to be on same page
 	; currently on page 3
@@ -876,6 +882,9 @@ PrintInteger:
 	RST_NegateDE
 	
 PrintIntegerLoop:
+	; need HL to be -ve here, so that it can
+	; handle -32768
+	
 	XCHG
 	LXI D,10
 	
@@ -905,7 +914,7 @@ List_String:
 List_Var:
   ADI '@'
   RST_PutChar
-  RET
+  RET ; last byte before TokenList must have high bit set : RET = C9
 
 ; Index to subroutine address must not overlap with other tokens
 ; Currently TokenList starts toward the end
@@ -916,8 +925,6 @@ List_Var:
 ; token A that is a left substring of another
 ; token B appears later in the list than B
 ; e.g. < is after <=
-
-db 0,0 ; 2 bytes free
 	
 TokenList:
 	DB QuestionMarkToken&0ffh
@@ -1714,7 +1721,7 @@ RndSubImpl:
   RAR
   XRA L
   MOV L,A
-  XRA H ; cleara carry
+  XRA H ; clears carry
   MOV H,A
   SHLD RNG_SEED
   
