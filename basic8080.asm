@@ -204,6 +204,8 @@
 ;			with this interpreter
 ; 2024-01-01 Fixed bug where parse error wasn't 
 ;     displayed as ? during LIST
+; 2024-01-28 Fixed bug where @ was displayed as M 
+;     during LIST
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -797,9 +799,9 @@ ReverseLoop:
 	
 	JMP ReverseLoop
 
-db 0,0 ; 2 bytes free
-			 ; positioned here so that TokenList
-			 ; starts in the right place
+db 0 ; 1 byte free
+		 ; positioned here so that TokenList
+		 ; starts in the right place
 
 ; List statement implementation
 ListSubImpl:
@@ -829,8 +831,7 @@ ListLoop:
   ; TODO replace above with CPI,JC,JZPage
   ; +1 byte here but saves 2 below
   
-  ; fall through
-
+  ; TODO potential saving of 1 byte below by moving INX H to start of loop
 List_Token_Loop:
 	; Test whether M is 255
   MOV D,M
@@ -999,7 +1000,7 @@ TokenList:
 	DB '*'+128
 	DB DivSub&0ffh
 	DB '/'+128
-	DB 255 ; 255 can only occur at the end
+	DB 255,255 ; 255 can only occur at the end
 	
 LineNumSub:
 	INX B
@@ -1735,5 +1736,3 @@ RndSubImpl:
   CALL DivideHL
   XCHG
   RET
-
-
