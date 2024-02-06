@@ -265,7 +265,6 @@ RNG_SEED:
 	DW 1 ; TODO initialise this in code
 			 ; it can't be zero
 			 
-
 PROG_BASE:
 
 ORG 00h
@@ -293,50 +292,11 @@ ORG 08h
 	JMP CompareJump_Entry
 	
 	; 1 bytes free
-	
-.macro RST_LDAXB_INXB
+
+.macro RST_JZPage
 RST 2
 .endm
 ORG 10h
-	
-	LDAX B
-	INX B
-	RET
-	
-AssignToVarPOPH:
-	POP H
-	
-AssignToVar:
-	; Put DE into var (HL)
-	
-	MOV M,E
-	INX H
-	MOV M,D
-	
-	RET
-	
-
-.macro RST_PutChar
-RST 3
-.endm
-ORG 18h
-
-; PutChar is called frequently
-
-PutChar:
-	; Assume that port 0 is for char I/O
-	; And port 1 is for char ready status
-	
-	OUT 0
-	RET
-
-; Space for 5 bytes - likely to need for
-; any real implementation of PutChar
-
-.macro RST_JZPage
-RST 4
-.endm
-ORG 20h
 	XTHL
 CompareJump_Entry:
 	JNZ JZPage_Skip
@@ -346,6 +306,38 @@ JZPage_Skip:
 ExpApplyOp: ; shared code
 	XTHL
 	RET
+	
+.macro RST_PutChar
+RST 3
+.endm
+ORG 18h
+
+; PutChar is called frequently
+; PutChar must return with Z set
+
+PutChar:
+	; port 2 is for char I/O
+	OUT 2
+PutCharWaitLoop: ; address 001ah
+  XRA A
+  RET ; TODO change if targetting hardware
+  
+	;IN 1
+	ANI 040h
+	RZ
+	db 0c3h ; opcode for JMP
+	
+.macro RST_LDAXB_INXB
+RST 4
+.endm
+ORG 20h
+	LDAX D ; opcode 01ah
+	NOP
+	LDAX B 
+	INX B
+	RET
+	
+	; 3 bytes free
 
 .macro RST_CompareHLDE
 RST 5
@@ -425,6 +417,9 @@ ExpEvaluateNum:
 	; can't use RST_CompareJump below
 	; because it doesn't preserve Carry after
 	; comparison.
+	; TODO - this assumption isn't correct - INX H
+	; doesnt affect flags
+	
 	CPI IntegerToken
 	JC ExpVar
 	
@@ -600,7 +595,8 @@ OutputStringLoop:
 	DB StringToken,(OutputStringRet&0ffh)-1
 OutputString_WithQuote:
 	RST_PutChar
-	JMP OutputStringLoop
+	RST_JZPage
+	DB (OutputStringLoop&0ffh)-1
 
 ExpLeftBrace:
 	DCX B
@@ -799,7 +795,7 @@ ReverseLoop:
 	
 	JMP ReverseLoop
 
-db 0 ; 1 byte free
+db 0,0,0,0 ; 4 bytes free
 		 ; positioned here so that TokenList
 		 ; starts in the right place
 
@@ -816,8 +812,9 @@ ListLoop:
 	
   LXI H,ListLoop	; so that we can loop using RET
   PUSH H
-
-	LXI H,TokenList-1
+  
+  ; H is already set to the correct page
+  MVI L,(TokenList-1)&0ffh
 
 	; These need to be on same page
 	; currently on page 3
@@ -828,16 +825,14 @@ ListLoop:
   RST_CompareJump
 	DB IntegerToken,(List_Integer&0ffh)-1
   
-  ; TODO replace above with CPI,JC,JZPage
-  ; +1 byte here but saves 2 below
+  JC List_Var
   
-  ; TODO potential saving of 1 byte below by moving INX H to start of loop
+  ; No need to check for end of TokenList
+  ; impossible not to be a token value in A
+  
 List_Token_Loop:
-	; Test whether M is 255
   MOV D,M
   INR D
-  RST_JZPage ; if reached end of TokenList
-  DB (List_Var&0ffh)-1
   INX H
   JP List_Token_Loop
   
@@ -847,7 +842,7 @@ List_Token:
   CMP M
   INX H
   JNZ List_Token_Loop
-
+	
 List_Token_String_Loop:
   MOV A,M
   ANI 07fh
@@ -857,7 +852,7 @@ List_Token_String_Loop:
   JP List_Token_String_Loop
   
   RET
-  
+	
 List_LineNum:
 	MVI A,10
 	RST_PutChar
@@ -906,7 +901,8 @@ PrintIntegerLoop2:
 	POP PSW
 	RZ
 	RST_PutChar
-	JMP PrintIntegerLoop2 ; could be JNZ
+	RST_JZPage
+	db (PrintIntegerLoop2&0ffh)-1
 
 List_String:
 	CALL OutputString_WithQuote
@@ -915,7 +911,8 @@ List_String:
 List_Var:
   ADI '@'
   RST_PutChar
-  RET ; last byte before TokenList must have high bit set : RET = C9
+  RET ; byte before TokenList must have high bit set
+
 
 ; Index to subroutine address must not overlap with other tokens
 ; Currently TokenList starts toward the end
@@ -1000,7 +997,7 @@ TokenList:
 	DB '*'+128
 	DB DivSub&0ffh
 	DB '/'+128
-	DB 255,255 ; 255 can only occur at the end
+	DB 255 ; 255 can only occur at the end
 	
 LineNumSub:
 	INX B
@@ -1020,14 +1017,24 @@ LetSub:
 	CPI EqualSub&0ffh
 	CNZ Error
 	
-LetSubEvaluate:
 	RST_ExpEvaluate
-	JMP AssignToVarPOPH
+	
+LetSubAssignToVar:
+
+	POP H
+	
+	; Put DE into var (HL)
+	
+	MOV M,E
+	INX H
+	MOV M,D
+	
+	RET
 
 GosubSub:
 	RST_ExpEvaluate
-	
 	POP H
+	
 	PUSH B
 	PUSH H
 	
@@ -1066,7 +1073,7 @@ EndSub:
 
 ; last byte of JMP AdvanceToNedtLineNum
 ; is 3, which is opcode for INX B, which
-; has no edfect before JMP NewLineReady
+; has no effect before JMP NewLineReady
 EndProgram equ EndSub-1
 
 InputSub:
@@ -1082,8 +1089,9 @@ InputSub:
 	POP B
 	
 	RST_ExpEvaluate
+	
 	POP B
-	JMP AssignToVarPOPH
+	JMP LetSubAssignToVar
 
 ForSub:
 	; Stack contains return address:
@@ -1228,15 +1236,6 @@ ExecuteDirect:
 	; page as PrintSub so that we don't have to
 	; update H
 
-	; TODO - could inc H if L is less than
-	; QuestionMarkSub so that page 3 could be used
-	; costs 5 bytes but if it saves more than
-	; one jump to IMPL it is worth it
-	;CPI QuestionMarkToken0ffh
-	;ADC H
-	;SUB L
-	;MOV H,A
-
 	; Jump to it
 	; Carry is clear when we do this
 	PCHL
@@ -1325,7 +1324,6 @@ MulSub:
 Multiply:
 ;multiply BC and DE into DE
 	MVI A,16
-	LXI H,0
 MulLoop:
 	DAD H
 	XCHG
@@ -1497,11 +1495,12 @@ NLTest:
 	DB 10,(NLTestTrue&0ffh)-1
 	
 NextCharLoop:
+	; This code is compatable with Dick Whipple's
+	; Front Panel 8080 emulator
 	IN 1
-	ANI 1
-	RST_JZPage
-	DB (NextCharLoop&0ffh)-1
-	IN 0
+	ANI 80h
+	JNZ NextCharLoop
+	IN 2
 	
 	MOV B,A
 	
@@ -1736,3 +1735,5 @@ RndSubImpl:
   CALL DivideHL
   XCHG
   RET
+
+
