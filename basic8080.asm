@@ -206,6 +206,10 @@
 ;     displayed as ? during LIST
 ; 2024-01-28 Fixed bug where @ was displayed as M 
 ;     during LIST
+; 2024-02-07 Working on corrections to comparison
+;     operators. Not in working state. Made I/O 
+;     compatible with Dick Whipple's Front Panel 
+;     8080 simulator
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -365,13 +369,16 @@ RST 6
 ORG 30h
 NegateDE:
 	;flags are not affected
+	
+	; decrement and invert so that we end
+	; up with D in A - sometimes handy
+	DCX D
 	MOV A,E
 	CMA
 	MOV E,A
 	MOV A,D
 	CMA
 	MOV D,A
-	INX D
 	RET
 
 .macro RST_ExpEvaluate
@@ -444,9 +451,7 @@ ExpVarGetValue:
 	MOV E,M
 	INX H
 	MOV D,M
-	
-	; fall through to ExpEvaluateOp
-	
+  
 ExpEvaluateOp:
 	;Expecting operator or right bracket or
 	;end of expression
@@ -1094,50 +1099,8 @@ InputSub:
 	JMP LetSubAssignToVar
 
 ForSub:
-	; Stack contains return address:
-	; ExecuteProgramLoop - EPL
-	; Keep it there even though it isn't used by 
-	; ForSub, it will be used by NextSub
-	
-	; First part is just like let statement
-	CALL LetSub
-	
-	PUSH H ; stack has var addr + 1 (VL+1), EPL
-	
-	RST_LDAXB_INXB
-	
-	CPI ToToken&0ffh
-	CNZ Error
-	
-	RST_ExpEvaluate
-	RST_NegateDE
-	
-	PUSH D ; stack contains -T,VL+1, EPL
-				 ; T is target
-				 
-	LXI D,1
-	LDAX B
-	
-	RST_CompareJump
-	DB StepToken&0ffh,(ForWithStep&0ffh)-1
+	JMP ForSubImpl
 
-	DB 21h ; LXI H opcode eats the next 2 bytes
-ForWithStep:
-	; we have step token
-	INX B
-	RST_ExpEvaluate
-	
-	INX SP
-	INX SP
-	POP H
-	PUSH B	; stack contains -T,LS,EPL
-	DCX SP
-	DCX SP
-	PUSH D	; stack contains S,-T,LS,EPL
-	PUSH H ; stack contains VL+1,S,-T,LS,EPL
-	
-	JMP ExecuteProgramLoop
-	
 NextSub:
 	POP H ; discard return address
 	; stack contains VL+1,S,-T,LS,EPL
@@ -1271,11 +1234,38 @@ UsrSub:
 ; https://wikiti.brandonw.net/index.php?title=Z80_Routines:Math:Random
 
 RndSub:
-	JMP RndSubImpl
+	LHLD RNG_SEED
+	MOV A,H
+  RAR
+  MOV A,L
+  RAR
+  XRA H
+  MOV H,A
+  MOV A,L
+  RAR
+  MOV A,H
+  RAR
+  XRA L
+  MOV L,A
+  XRA H ; clears carry
+  MOV H,A
+  SHLD RNG_SEED
+  
+  ; carry is clear at this point
+  RAR
+  MOV H,A
+  
+  ; above 2 bytes give us a value between
+  ; 0 and 32767
+  
+  CALL DivideHL
+  XCHG
+  RET
+
 
 ; Token values >= this are all operators
 Operators:
-
+	
 GTSub:
 	; Swap operands and fall through
 	XCHG
@@ -1285,14 +1275,15 @@ LTESub:
 	; Swap operands and fall through
 	XCHG
 GTESub:
-	RST_NegateDE
-	DAD D
-	
 	MOV A,H
-	RAL
-	
-	DB 11h; LXi D opcode to swallow next byte
-
+	XRI 80h
+	MOV H,A
+  RST_NegateDE
+  XRI 80h
+  MOV D,A
+  DAD D
+  
+  DB 3eh ; MVI A opcode to swallow next byte
 EqualSub:
 	RST_CompareHLDE ; returns Z iff HL=DE
 	CMC
@@ -1304,7 +1295,7 @@ NotEqualSub:
 	RNC
 	DCX D
 	RET
-
+  
 AddSub:
 	DB 3eh	; opcode for MVI A, to eat next byte
 SubSub:
@@ -1707,33 +1698,47 @@ DB 34,QuoteClass&0ffh
 DB 33,LT0Class&0ffh
 DB 0,FreshStart&0ffh
 
-RndSubImpl:
-	LHLD RNG_SEED
-	MOV A,H
-  RAR
-  MOV A,L
-  RAR
-  XRA H
-  MOV H,A
-  MOV A,L
-  RAR
-  MOV A,H
-  RAR
-  XRA L
-  MOV L,A
-  XRA H ; clears carry
-  MOV H,A
-  SHLD RNG_SEED
-  
-  ; carry is clear at this point
-  RAR
-  MOV H,A
-  
-  ; above 2 bytes give us a value between
-  ; 0 and 32767
-  
-  CALL DivideHL
-  XCHG
-  RET
+ForSubImpl:
+	; Stack contains return address:
+	; ExecuteProgramLoop - EPL
+	; Keep it there even though it isn't used by 
+	; ForSub, it will be used by NextSub
+	
+	; First part is just like let statement
+	CALL LetSub
+	
+	PUSH H ; stack has var addr + 1 (VL+1), EPL
+	
+	RST_LDAXB_INXB
+	
+	CPI ToToken&0ffh
+	CNZ Error
+	
+	RST_ExpEvaluate
+	RST_NegateDE
+	
+	PUSH D ; stack contains -T,VL+1, EPL
+				 ; T is target
+				 
+	LXI D,1
+	LDAX B
+	
+	RST_CompareJump
+	DB StepToken&0ffh,(ForWithStep&0ffh)-1
 
-
+	DB 21h ; LXI H opcode eats the next 2 bytes
+ForWithStep:
+	; we have step token
+	INX B
+	RST_ExpEvaluate
+	
+	POP H ; was INX SP, INX SP
+	POP H
+	PUSH B	; stack contains -T,LS,EPL
+	DCX SP
+	DCX SP
+	PUSH D	; stack contains S,-T,LS,EPL
+	PUSH H ; stack contains VL+1,S,-T,LS,EPL
+	
+	JMP ExecuteProgramLoop
+	
