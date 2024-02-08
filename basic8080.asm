@@ -210,6 +210,9 @@
 ;     operators. Not in working state. Made I/O 
 ;     compatible with Dick Whipple's Front Panel 
 ;     8080 simulator
+; 2024-02-08 May have fixed comparison operator
+;     problem. Need to save 2 bytes to be able to
+;     test it
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -451,7 +454,11 @@ ExpVarGetValue:
 	MOV E,M
 	INX H
 	MOV D,M
-  
+
+	db 21h ; opcode for LXI skips 2 bytes
+ExpEvaluateOpNegReturn:
+	RST_NegateDE
+	INX D
 ExpEvaluateOp:
 	;Expecting operator or right bracket or
 	;end of expression
@@ -654,8 +661,7 @@ Ready:
 	; Do this every time to guard against
 	; GOSUB with no RETURN errors
 	
-	LXI H,STACK_INIT
-	SPHL
+	LXI SP,STACK_INIT
 	
 	MVI A,'>'
 	RST_PutChar
@@ -800,7 +806,7 @@ ReverseLoop:
 	
 	JMP ReverseLoop
 
-db 0,0,0,0 ; 4 bytes free
+db 0,0 ; 2 bytes free
 		 ; positioned here so that TokenList
 		 ; starts in the right place
 
@@ -1266,22 +1272,26 @@ RndSub:
 ; Token values >= this are all operators
 Operators:
 	
-GTSub:
-	; Swap operands and fall through
-	XCHG
-LTSub:
-	DCX D
 LTESub:
 	; Swap operands and fall through
 	XCHG
 GTESub:
+	XTHL
+	DCX H
+	DCX H
+	XTHL
+LTSub:
+	; Swap operands and fall through
+	XCHG
+GTSub:
+	MOV A,L
+	SUB E
 	MOV A,H
-	XRI 80h
-	MOV H,A
-  RST_NegateDE
-  XRI 80h
-  MOV D,A
-  DAD D
+	SBB D
+	RAR
+	XRA H
+	XRA D
+	RAL
   
   DB 3eh ; MVI A opcode to swallow next byte
 EqualSub:
