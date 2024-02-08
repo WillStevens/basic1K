@@ -213,6 +213,8 @@
 ; 2024-02-08 May have fixed comparison operator
 ;     problem. Need to save 2 bytes to be able to
 ;     test it
+; 2024-02-08 Reclaimed some space so that 3FEh is
+;     the last byte use. Free space 5 bytes.
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -455,10 +457,6 @@ ExpVarGetValue:
 	INX H
 	MOV D,M
 
-	db 21h ; opcode for LXI skips 2 bytes
-ExpEvaluateOpNegReturn:
-	RST_NegateDE
-	INX D
 ExpEvaluateOp:
 	;Expecting operator or right bracket or
 	;end of expression
@@ -806,9 +804,23 @@ ReverseLoop:
 	
 	JMP ReverseLoop
 
-db 0,0 ; 2 bytes free
-		 ; positioned here so that TokenList
-		 ; starts in the right place
+POPHAssignToVar:
+
+	POP H
+	
+	; Put DE into var (HL)
+	
+	MOV M,E
+	INX H
+	MOV M,D
+	
+	RET
+
+; ListSubImple must start at 150h This so that
+; LineNumSub is at 223h
+; Any space freed prior to this address can be
+; shifted forward by prefixing the subroutine
+; above.
 
 ; List statement implementation
 ListSubImpl:
@@ -1030,17 +1042,7 @@ LetSub:
 	
 	RST_ExpEvaluate
 	
-LetSubAssignToVar:
-
-	POP H
-	
-	; Put DE into var (HL)
-	
-	MOV M,E
-	INX H
-	MOV M,D
-	
-	RET
+	JMP POPHAssignToVar
 
 GosubSub:
 	RST_ExpEvaluate
@@ -1102,7 +1104,7 @@ InputSub:
 	RST_ExpEvaluate
 	
 	POP B
-	JMP LetSubAssignToVar
+	JMP POPHAssignToVar
 
 ForSub:
 	JMP ForSubImpl
@@ -1272,14 +1274,13 @@ RndSub:
 ; Token values >= this are all operators
 Operators:
 	
-LTESub:
+GTESub:
 	; Swap operands and fall through
 	XCHG
-GTESub:
-	XTHL
-	DCX H
-	DCX H
-	XTHL
+LTESub:
+	RST_CompareHLDE
+	RST_JZPage
+	DB (BinReturn&0ffh)-1
 LTSub:
 	; Swap operands and fall through
 	XCHG
@@ -1296,6 +1297,7 @@ GTSub:
   DB 3eh ; MVI A opcode to swallow next byte
 EqualSub:
 	RST_CompareHLDE ; returns Z iff HL=DE
+BinReturn:
 	CMC
 	DB 3eh ; MVI A opcode to swallow next byte
 	
