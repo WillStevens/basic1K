@@ -1274,17 +1274,17 @@ RndSub:
 ; Token values >= this are all operators
 Operators:
 	
-GTESub:
+LTESub:
 	; Swap operands and fall through
 	XCHG
-LTESub:
+GTESub:
 	RST_CompareHLDE
 	RST_JZPage
 	DB (BinReturn&0ffh)-1
-LTSub:
+GTSub:
 	; Swap operands and fall through
 	XCHG
-GTSub:
+LTSub:
 	MOV A,L
 	SUB E
 	MOV A,H
