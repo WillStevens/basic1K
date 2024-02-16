@@ -3,6 +3,21 @@
 # in-place parser for 1K Tiny 
 # BASIC - a parser that doesn’t
 # need a separate input buffer
+#
+# This has the disadvantage tnat
+# you can't delete characters, but
+# advantages are that line length is
+# limited only by available RAM, and
+# no separate input buffer space is
+# needed in RAM
+#
+# The inability to delete is mitigated
+# by preventing the user from overwriting
+# a line - the line must be explicitly
+# deleted first. Also, some terminals
+# have a 'line at a time' mode, where
+# deletion of characters bappens in
+# the terminal.
 
 class=NoClass
 
@@ -32,15 +47,45 @@ DigitClass(same):
   if same:
     parseState=parseState*10+(c-‘0’)
   else:
-    output(intToken,parseState)
+    Output(intToken,parseState)
     NoClass(false)
 
 # These are all closely related 
 # and intertwined in assembly.
 QuoteClass(same):
+  class=QuoteClassExpEnd
+
+QuoteClassExpEnd(same):
+  Output(c)
+  if c=quote:
+    NoClass(false)
 
 CompClass(same):
-
+  # fall through
 LT0Class(same):
+  # For this character class, which
+  # includes + - * / ( )
+  # every single character is a token
+  # to be looked up. Setting class
+  # to a different value (one byte ahead)
+  # guarantees that this will happen.
+
+  class=LT0ClassHadOne
+  # fall through
+LT0CladsHadOne(same):
+  # fall through
 
 AlphaClass(same):
+  # output c regardless of same - this
+  # means that when character class
+  # changes we will write a character
+  # from a different class. This is
+  # good because it means thst
+  # LookupToken will definitely stop
+  # when it reaches that character
+  Output(c)
+  # keep track of number of characters
+  # by decrementing because we want to
+  # use this to get back to the start of
+  # the sequence of characters
+  parseState=parseState-1
