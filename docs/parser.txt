@@ -2,7 +2,15 @@
 # a pseudo-code version of the
 # in-place parser for 1K Tiny 
 # BASIC - a parser that doesn’t
-# need a separate input buffer
+# need a separate input buffer.
+#
+# As characters are entered and
+# processed, tokens are output directly
+# into the area immediately after where
+# the program is stored. 
+# (then later on either executed
+# directly from there or 'MemoryRotated'
+# into the right location in the program)
 #
 # This has the disadvantage tnat
 # you can't delete characters, but
@@ -13,18 +21,23 @@
 #
 # The inability to delete is mitigated
 # by preventing the user from overwriting
-# a line - the line must be explicitly
-# deleted first. Also, some terminals
-# have a 'line at a time' mode, where
-# deletion of characters bappens in
-# the terminal.
+# a program line - the line must be
+# explicitly deleted first. Also, some
+# terminals have a 'line at a time' mode, 
+# where editing of a line happens in the
+# terminal before sending the line.
 
 class=NoClass
+c=anything except newline
 
 while True:
-  c=GetChar()
+  if c==NewLine:
+    if class=QuoteClassExpEnd:
+      # unterminated string
+      error
+    return
 
-  if c==10 return
+  c=GetChar()
 
   newClass=LookUpClass(c)
 
@@ -33,9 +46,9 @@ while True:
 LookupClass(c):
   return one of:
   DigitClass
-  QuoteClass
-  CompClass
-  LT0Class
+  QuoteClass # the " character
+  CompClass # includes < = > chars 
+  LT0Class # characters less than '0'
   AlphaClass
 
 NoClass(same):
@@ -84,8 +97,25 @@ AlphaClass(same):
   # LookupToken will definitely stop
   # when it reaches that character
   Output(c)
+
   # keep track of number of characters
   # by decrementing because we want to
   # use this to get back to the start of
-  # the sequence of characters
+  # the sequence of characters and 8080
+  # has no 16-bit subtract
   parseState=parseState-1
+
+  if same:
+    return
+  else:
+    if parseState=-2 and
+      c between '@' and '_':
+      # variable token
+      output(c-'@')
+      NoClass(false)
+    else:
+      Do a token Lookup of the last 
+      -parseState chars in the in-place
+      buffer and output the token.
+      Error if token not found.
+
