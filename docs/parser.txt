@@ -1,0 +1,46 @@
+# This is an attempt to write
+# a pseudo-code version of the
+# in-place parser for 1K Tiny 
+# BASIC - a parser that doesn’t
+# need a separate input buffer
+
+class=NoClass
+
+while True:
+  c=GetChar()
+
+  if c==10 return
+
+  newClass=LookUpClass(c)
+
+  class(newClass<>class)
+
+LookupClass(c):
+  return one of:
+  DigitClass
+  QuoteClass
+  CompClass
+  LT0Class
+  AlphaClass
+
+NoClass(same):
+  parseState=0
+  class=newClass
+  class(True)
+
+DigitClass(same):
+  if same:
+    parseState=parseState*10+(c-‘0’)
+  else:
+    output(intToken,parseState)
+    NoClass(false)
+
+# These are all closely related 
+# and intertwined in assembly.
+QuoteClass(same):
+
+CompClass(same):
+
+LT0Class(same):
+
+AlphaClass(same):
