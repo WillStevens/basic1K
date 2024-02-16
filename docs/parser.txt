@@ -117,5 +117,6 @@ AlphaClass(same):
       Do a token Lookup of the last 
       -parseState chars in the in-place
       buffer and output the token.
-      Error if token not found.
+      If token not found the:
+        output(questionMarkToken)
 
