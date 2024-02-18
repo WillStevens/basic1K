@@ -1351,7 +1351,7 @@ DontAdd:
 	RET
 
 DivSub:
-:31 bytes
+; 31 bytes
 ;Divide HL by DE
 ;Remainder in HL 
 ;Result in DE
