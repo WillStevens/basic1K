@@ -215,7 +215,9 @@
 ;     test it
 ; 2024-02-08 Reclaimed some space so that 3FEh is
 ;     the last byte uses. Free space 5 bytes.
-
+; 2024-02-18 Worked towards reclaiming 4 bytes in
+;     the tokenizer. Good chance of being 
+;     incorrect, will require debugging.
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -662,9 +664,6 @@ Ready:
 	
 	LXI SP,STACK_INIT
 	
-	MVI A,'>'
-	RST_PutChar
-	
 	LHLD PROG_PTR
 	PUSH H ; push it because we need it after 
 				 ; GetLine
@@ -805,6 +804,11 @@ ReverseLoop:
 	
 	JMP ReverseLoop
 
+POPHAssignToVar_Prefix:
+  POP B
+  RST_ExpEvaluate
+  POP B
+  
 	; fall through
 POPHAssignToVar:
 
@@ -818,7 +822,7 @@ POPHAssignToVar:
 	
 	RET
 
-; ListSubImple must start at 150h This so that
+; ListSubImpl must start at 150h This so that
 ; LineNumSub is at 223h
 ; Any space freed prior to this address can be
 ; shifted forward by prefixing the subroutine
@@ -1101,12 +1105,8 @@ InputSub:
 	LXI H,INPUT_BUFFER
 	PUSH H
 	CALL GetLine
-	POP B
-
-  RST_ExpEvaluate
-  POP B
   
-	JMP POPHAssignToVar
+	JMP POPHAssignToVar_Prefix
 
 ForSub:
 	JMP ForSubImpl
@@ -1399,79 +1399,6 @@ DivNoRestore:
 	RST_NegateDE
 	
 	RET
-
-
-GetLineNum:
-	; Line number is in DE, look it up in the program and set BC to the line num token
-	; DE is preserved
-	; HL is not preserved
-	; 
-	; return with Z set if successful
-	;
-	; Z clear if not successful, and BC points
-	; to the first byte of the line with number
-	; greater than the request
-	
-	LXI B,PROG_BASE-1 ; 1 bytes before PROG_BASE
-
-GetLineNumLoop:
-	CALL ATNLN_INXB ; has one INX B preceeding
-	RNZ
-	
-	INX B
-	
-	; Test for DE <= (BC), and return if true
-	RST_LDAXB_INXB
-	SUB E
-	MOV L,A
-	LDAX B
-	SBB D ; C set if DE > (BC), and Z not set
-				; C clear if DE <= (BC)
-	JC GetLineNumLoop
-	
-	DCX B
-	DCX B
-	; Now we want Z set if DE=(BC), clear
-	; otherwise 
-	
-ATNLN_RetNZ: ; shared code. Returns NZ if we know
-						 ; that A is non-zero
-	ORA L
-	
-	RET
-
-ATNLN_String:
-	RST_LDAXB_INXB
-	CPI StringToken
-	JNZ ATNLN_String
-	
-	DB 0c2h ; opcode for JNZ eats 2 bytes
-ATNLN_Int: ; Z is always set when we reach here
-	INX B
-ATNLN_INXB:
-	INX B
-	
-AdvanceToNextLineNum:
-; BC is a pointer to somewhere in the program
-; move onto the next line number
-; return with Z set if successful
-; Z clear if fell off end of program
-
-	LDAX B
-	RST_CompareJump
-	DB EndProgram&0ffh,(ATNLN_RetNZ&0ffh)-1
-	; fell off end of program
-	
-	CPI LinenumSub&0ffh
-	RZ
-	
-	INX B
-	
-	RST_CompareJump
-	DB IntegerToken,(ATNLN_Int&0ffh)-1
-	RST_CompareJump
-	DB StringToken,(ATNLN_String&0ffh)-1
-	JMP AdvanceToNextLineNum
 	
 ; GetLine sits entirely in page 3
 ; good - it uses RST_CompareJump in two
@@ -1491,15 +1418,20 @@ GetLine:
 	; On return HL points to byte adter what we've 
 	; got.
 	
+	MVI A,'>'
+	RST_PutChar
+	
 	PUSH H
-	MOV B,H ; H must not be 10
+	
+	; A is zero at this point
+	; (needs to be <>10 on fall to NLTest)
 
 FreshStart:
 
   LXI H,NoCharClass
 	
 NLTest:
-	MOV A,B; check for newline
+	; check for newline
 	RST_CompareJump
 	DB 10,(NLTestTrue&0ffh)-1
 	
@@ -1592,29 +1524,46 @@ DigitClassNotEnd:
   
 QuoteClassExpEnd:
 	
-	; if C=QuoteClass&0ffh then NZ
-	MVI A,QuoteClass&0ffh
-	SUB C
+  ; TODO check for newline and
+  ; generate error
+  
+  ; A is equal to:
+	; char class (C) XOR QuoteCharClassExpEnd
 	
-	; wanted to do this, but no bitwise xor in 
-	; ASM80
-	;SBI (QuoteClass^QuoteClassExpEnd) & 0ffh
+	; so long as QuoteCharClass is the only class
+	; with an odd address or the only one
+	; with an even address then tbis will only
+	; have LSB=1 if current char class
+	; is QuoteCharClass
 	
-	; somehow invert Z
-	SBI 1 ; iff it was zero will C be set
-	SBB A ; iff it was zero will it
-				; now be non-zero
+	db 0e6h ; opcode for ANI eats next byte
+	        ; (which is 2dh lsbits are 01)
 	
 QuoteClass:
-	; first time through Z is set and A is zero
-	; on fall through Z is set unless its the last quote
-	MVI L,(QuoteClassExpEnd&0ffh)-1
+  
+  DCR L ; set to QuoteClassExpEnd
+  
+  ; first time through A is zero and Z is set
+	; on fall A is even unless C is QuoteClass
+	
+	ANI 1 ; ANI H would also do here
+	      ; since H is 3
+	      ; but Quote class must be odd length.
+	      ; worth considering when adding
+	      ; new line test
+	
+	; Now Z is set if this was first Quote, or if
+	; we are in a string and haven't reached 
+	; last quote
+	
 	
 LT0Class:
-	INX H
+	INX H; next char should always count as 
+	      ; different class
 	NOP
-	
+
 CompClass:
+	NOP
 	NOP
 AlphaClass:
 	
@@ -1637,6 +1586,9 @@ AlphaClass:
 	;								token
 	; TokenClassEnd - if end of token
 	
+	MOV A,B ; we need tbis after jump to NLTest
+	        ; and if jump not taken the we
+	        ; dont care wbat A is
 	RST_JZPage
 	DB (NLTest&0ffh)-1
 	
@@ -1737,6 +1689,78 @@ DB 35,LT0Class&0ffh
 DB 34,QuoteClass&0ffh
 DB 33,LT0Class&0ffh
 DB 0,FreshStart&0ffh
+
+GetLineNum:
+	; Line number is in DE, look it up in the program and set BC to the line num token
+	; DE is preserved
+	; HL is not preserved
+	; 
+	; return with Z set if successful
+	;
+	; Z clear if not successful, and BC points
+	; to the first byte of the line with number
+	; greater than the request
+	
+	LXI B,PROG_BASE-1 ; 1 bytes before PROG_BASE
+
+GetLineNumLoop:
+	CALL ATNLN_INXB ; has one INX B preceeding
+	RNZ
+	
+	INX B
+	
+	; Test for DE <= (BC), and return if true
+	RST_LDAXB_INXB
+	SUB E
+	MOV L,A
+	LDAX B
+	SBB D ; C set if DE > (BC), and Z not set
+				; C clear if DE <= (BC)
+	JC GetLineNumLoop
+	
+	DCX B
+	DCX B
+	; Now we want Z set if DE=(BC), clear
+	; otherwise 
+	
+ATNLN_RetNZ: ; shared code. Returns NZ if we know
+						 ; that A is non-zero
+	ORA L
+	
+	RET
+
+ATNLN_String:
+	RST_LDAXB_INXB
+	CPI StringToken
+	JNZ ATNLN_String
+	
+	DB 0c2h ; opcode for JNZ eats 2 bytes
+ATNLN_Int: ; Z is always set when we reach here
+	INX B
+ATNLN_INXB:
+	INX B
+	
+AdvanceToNextLineNum:
+; BC is a pointer to somewhere in the program
+; move onto the next line number
+; return with Z set if successful
+; Z clear if fell off end of program
+
+	LDAX B
+	RST_CompareJump
+	DB EndProgram&0ffh,(ATNLN_RetNZ&0ffh)-1
+	; fell off end of program
+	
+	CPI LinenumSub&0ffh
+	RZ
+	
+	INX B
+	
+	RST_CompareJump
+	DB IntegerToken,(ATNLN_Int&0ffh)-1
+	RST_CompareJump
+	DB StringToken,(ATNLN_String&0ffh)-1
+	JMP AdvanceToNextLineNum
 
 ForSubImpl:
 	; Stack contains return address:
