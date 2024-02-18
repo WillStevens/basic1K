@@ -214,8 +214,8 @@
 ;     problem. Need to save 2 bytes to be able to
 ;     test it
 ; 2024-02-08 Reclaimed some space so that 3FEh is
-;     the last byte use. Free space 5 bytes.
-; 2024-02-18 Reclaimed a further 2 bytes
+;     the last byte uses. Free space 5 bytes.
+
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -737,13 +737,10 @@ DeleteProgramLine:
 ; 25 bytes
 	PUSH H
 	CALL GetLineNum
+	POP H
 	JNZ Ready		; if line not found, do nothing
-							; no need to restore H
-							; before jumping because
-							; Ready doesn't need it
-							; and Read also sets SP
 
-	; H already pushed = last
+	PUSH H
 	PUSH B ; first
 	PUSH H ; last
 	
@@ -807,10 +804,6 @@ ReverseLoop:
 	INX D
 	
 	JMP ReverseLoop
-
-POPHAssignToVar_Prefix:
-	RST_ExpEvaluate
-	POP B
 
 	; fall through
 POPHAssignToVar:
@@ -1109,8 +1102,11 @@ InputSub:
 	PUSH H
 	CALL GetLine
 	POP B
-	
-	JMP POPHAssignToVar_Prefix
+
+  RST_ExpEvaluate
+  POP B
+  
+	JMP POPHAssignToVar
 
 ForSub:
 	JMP ForSubImpl
