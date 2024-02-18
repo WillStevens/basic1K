@@ -215,7 +215,8 @@
 ;     test it
 ; 2024-02-08 Reclaimed some space so that 3FEh is
 ;     the last byte use. Free space 5 bytes.
-;
+; 2024-02-18 Reclaimed a further 2 bytes
+
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
 ; 1K RAM from 0400h-07FFh
@@ -736,10 +737,13 @@ DeleteProgramLine:
 ; 25 bytes
 	PUSH H
 	CALL GetLineNum
-	POP H
 	JNZ Ready		; if line not found, do nothing
+							; no need to restore H
+							; before jumping because
+							; Ready doesn't need it
+							; and Read also sets SP
 
-	PUSH H ; last
+	; H already pushed = last
 	PUSH B ; first
 	PUSH H ; last
 	
@@ -804,6 +808,11 @@ ReverseLoop:
 	
 	JMP ReverseLoop
 
+POPHAssignToVar_Prefix:
+	RST_ExpEvaluate
+	POP B
+
+	; fall through
 POPHAssignToVar:
 
 	POP H
@@ -1101,10 +1110,7 @@ InputSub:
 	CALL GetLine
 	POP B
 	
-	RST_ExpEvaluate
-	
-	POP B
-	JMP POPHAssignToVar
+	JMP POPHAssignToVar_Prefix
 
 ForSub:
 	JMP ForSubImpl
@@ -1319,6 +1325,7 @@ SubSub:
 	RET
 
 MulSub:
+; 20 bytes
 ; multiple HL and DE into DE, preserving B
 	PUSH B
 	MOV B,H
@@ -1344,6 +1351,7 @@ DontAdd:
 	RET
 
 DivSub:
+:31 bytes
 ;Divide HL by DE
 ;Remainder in HL 
 ;Result in DE
@@ -1476,6 +1484,8 @@ AdvanceToNextLineNum:
 ; as NoCharClass
 
 NLTestTrue:
+	; TODO should be error if we are in the middle
+	; of a string
 	POP H
 	RET
 
@@ -1645,7 +1655,9 @@ TokenClassEnd:
 	
 	; it's a var if bits 7,6,5 are 010 and
   ; E=-2
-
+  ; TODO These aren't the only conditions that 
+  ; could lead to the test below passing - 
+  ; e.g. if 7,6,5=001 and E=10011110
 	MOV A,M
 	XRI 040h
 	MOV D,A
@@ -1690,17 +1702,37 @@ LookupToken:
   JNZ LookupToken
 	
   ; didn't find it
+  
+  ; if (HL)>=64 and (HL+1)<64 then its a var
+  ; could do the var test here
+  ; if it can be done in few bytes
 	
 	MVI M,QuestionMarkToken&0ffh
 	RST_JZPage
 	DB (Write_Shared_Written&0ffh)-1
 
-; TODO
+; TODO perhaps
 ; alphaclass, compclass and lt0class can
 ; all be combined, and call LookupToken
 ; after every char
 ; requires changes to lookup routine to
 ; take account of coming to end of buffer
+;
+; This saves about 7 bytes over
+; current lookup routine
+; so if check for end of buffer can be done
+; in 7 or fewer bytes it's worth it
+; MVI C,QuoteClass
+; CPI 33
+; RZ
+; MVI C,TokenClass
+; CPI '0'
+; RC
+; CPI '9'+1
+; RC
+; MVI C,DigitClass
+; RET
+
 ClassLookup:
 DB 64,AlphaClass&0ffh
 DB 58,CompClass&0ffh
