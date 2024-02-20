@@ -218,6 +218,8 @@
 ; 2024-02-18 Worked towards reclaiming 4 bytes in
 ;     the tokenizer. Good chance of being 
 ;     incorrect, will require debugging.
+; 2024-02-20 Debugged above changes and
+;     they seem okau. Free space 9 bytes
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -1431,6 +1433,7 @@ FreshStart:
   LXI H,NoCharClass
 	
 NLTest:
+  MOV A,B
 	; check for newline
 	RST_CompareJump
 	DB 10,(NLTestTrue&0ffh)-1
@@ -1448,11 +1451,19 @@ NextCharLoop:
   ; Do we have the same class as before?
   PUSH H
 	MVI L,(ClassLookup&0ffh)-1
+	; Test for quote first
+	; This doesn't save spave, but takes 3 bytes
+	; away from class lookip and puts them here
+	; so can be used to change odd/even of
+	; ...Class subroutines
+	RST_CompareJump
+	DB 34,(LC_QuoteTestTrue-1)&0ffh
 LookupClassLoop:
 	INR L
 	CMP M
 	INR L
 	JC LookupClassLoop
+LC_QuoteTestTrue:
 	MOV C,M
 	POP H
 	
@@ -1543,20 +1554,16 @@ QuoteClass:
   
   DCR L ; set to QuoteClassExpEnd
   
-  ; first time through A is zero and Z is set
+  ; first time through A is zero 
 	; on fall A is even unless C is QuoteClass
 	
-	ANI 1 ; ANI H would also do here
-	      ; since H is 3
-	      ; but Quote class must be odd length.
-	      ; worth considering when adding
-	      ; new line test
+	ANA H ; H is 3 
 	
 	; Now Z is set if this was first Quote, or if
 	; we are in a string and haven't reached 
 	; last quote
 	
-	
+	db 3eh ; opcode for MVI A eats next byte
 LT0Class:
 	INX H; next char should always count as 
 	      ; different class
@@ -1586,9 +1593,6 @@ AlphaClass:
 	;								token
 	; TokenClassEnd - if end of token
 	
-	MOV A,B ; we need tbis after jump to NLTest
-	        ; and if jump not taken the we
-	        ; dont care wbat A is
 	RST_JZPage
 	DB (NLTest&0ffh)-1
 	
@@ -1659,34 +1663,11 @@ LookupToken:
 	RST_JZPage
 	DB (Write_Shared_Written&0ffh)-1
 
-; TODO perhaps
-; alphaclass, compclass and lt0class can
-; all be combined, and call LookupToken
-; after every char
-; requires changes to lookup routine to
-; take account of coming to end of buffer
-;
-; This saves about 7 bytes over
-; current lookup routine
-; so if check for end of buffer can be done
-; in 7 or fewer bytes it's worth it
-; MVI C,QuoteClass
-; CPI 33
-; RZ
-; MVI C,TokenClass
-; CPI '0'
-; RC
-; CPI '9'+1
-; RC
-; MVI C,DigitClass
-; RET
-
+DB QuoteClass&0ffh
 ClassLookup:
 DB 64,AlphaClass&0ffh
 DB 58,CompClass&0ffh
 DB 48,DigitClass&0ffh
-DB 35,LT0Class&0ffh
-DB 34,QuoteClass&0ffh
 DB 33,LT0Class&0ffh
 DB 0,FreshStart&0ffh
 
