@@ -2,6 +2,15 @@
 ; 25th Feb 2023
 ; 1K 8080 BASIC
 ;
+; Post-assembly checklist
+;
+; 1. LineNumSub is at address 223h
+; 2. DivSub is at address 2xxh (i.e. <= 2ffh)
+; 3. Program does not exceed 1k
+; 4. In ClassLookup, check that QuoteClass
+;    is the only class subroutine with an
+;    odd address (i.e. bit 0=1)
+;
 ; 2023-03-03 About 450 bytes long
 ; 2023-03-08 About 750 bytes long
 ; 2023-03-11 About 840 bytes long
@@ -220,6 +229,31 @@
 ;     incorrect, will require debugging.
 ; 2024-02-20 Debugged above changes and
 ;     they seem okau. Free space 9 bytes
+; 2024-02-22 Rearranged RSTs and added CPI to end
+;     of RST_LDAXB_INXB_CPI to save memory.
+;     Free space still 9 bytes but now
+;     7 of those are at the end of 1K, so are
+;     easy to make use of.
+;     Need to check movement and alignment
+;     of subroutines. 
+;     It would be useful to have a checklist of
+;     all dependencies that need to be checked
+;     when there are large movements in memory.
+;
+;     Next things to do:
+;     - unterminated string check
+;     - forbidding excess chars in tokens
+;     - correct operator precedence for * /
+;     - error on divide by zero
+;     not sure whether all 4 can be done in
+;     only 7 bytes
+; 2024-02-25 Added unterminated string check and
+;     didvide by zero error. 2 bytes over budget.
+; 2024-02-25 Realised that removing reatriction
+;     that RUN, LIST and NEW only allowed in
+;     direct mode would will probably save a
+;     sufficient number of bytes to finish all
+;     outstanding work
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -282,49 +316,34 @@ RNG_SEED:
 PROG_BASE:
 
 ORG 00h
-	; put PROG_BASE into PROG_PTR and
-	; jump to Ready
-	LXI H,PROG_BASE
+  ; I would like this to be:
+  ; LXI H,PROG_BASE
+	; SHLD PROG_PTR
+	; JMP NewLineReady
+	;
+	; But this doesn't fit in 8 bytes.
+	; Instead we find a place in the program
+	; that has JMP NewLineReady followed by
+	; LXI B,PROG_BASE, and set SP to that 
+	; address, the POP H from the stack and 
+	; store it in PROG_PTR, then DCX SP means
+	; that when we fall throuhh to PutChar,
+	; the RET will jump to NewLineReady
+	; 
+	; (It means that on reset and RST 0 a char
+	; will be output that depends on the value of
+	; A at the time, but worth it to save several
+	; bytes)
+
+	LXI SP,ExecuteProgram+1
+	POP H
 	SHLD PROG_PTR
-	db 0c3h ; JMP
-	db Ready&0ffh
-	
-.macro RST_CompareJump
+	DCX SP
+
+.macro RST_PutChar
 RST 1
 .endm
 ORG 08h
-	db Ready/256 ; should be zero (NOP)
-; byte after RST is compared with A
-; if equal then jump to address on same page.
-;
-; only use where performance is not
-; important (parsing, printing)
-
-	XTHL
-	CMP M
-	INX H
-	JMP CompareJump_Entry
-	
-	; 1 bytes free
-
-.macro RST_JZPage
-RST 2
-.endm
-ORG 10h
-	XTHL
-CompareJump_Entry:
-	JNZ JZPage_Skip
-	MOV L,M
-JZPage_Skip:
-	INX H
-ExpApplyOp: ; shared code
-	XTHL
-	RET
-	
-.macro RST_PutChar
-RST 3
-.endm
-ORG 18h
 
 ; PutChar is called frequently
 ; PutChar must return with Z set
@@ -341,17 +360,49 @@ PutCharWaitLoop: ; address 001ah
 	RZ
 	db 0c3h ; opcode for JMP
 	
-.macro RST_LDAXB_INXB
+.macro RST_LDAXB_INXB_CPI
+RST 2
+.endm
+ORG 10h
+	LDAX B ; opcode 0ah
+	NOP
+	INX B
+	XTHL
+	CMP M
+	INX H
+	XTHL
+	RET
+	
+.macro RST_CompareJump
+RST 3
+.endm
+ORG 18h
+; byte after RST is compared with A
+; if equal then jump to address on same page.
+;
+; only use where performance is not
+; important (parsing, printing)
+
+	XTHL
+	CMP M
+	INX H
+	JMP CompareJump_Entry
+	
+	; 2 bytes free
+
+.macro RST_JZPage
 RST 4
 .endm
 ORG 20h
-	LDAX D ; opcode 01ah
-	NOP
-	LDAX B 
-	INX B
+	XTHL
+CompareJump_Entry:
+	JNZ JZPage_Skip
+	MOV L,M
+JZPage_Skip:
+	INX H
+ExpApplyOp: ; shared code
+	XTHL
 	RET
-	
-	; 3 bytes free
 
 .macro RST_CompareHLDE
 RST 5
@@ -417,10 +468,10 @@ ExpEvaluate:
 ExpEvaluateNum:
 	; Expecting ( var integer or - sign
 	; or function call
-	RST_LDAXB_INXB
-	
-	RST_CompareJump
-	DB LeftBraceToken&0ffh,(ExpLeftBrace&0ffh)-1
+	RST_LDAXB_INXB_CPI
+	DB LeftBraceToken&0ffh
+	RST_JZPage
+	DB (ExpLeftBrace&0ffh)-1
 	RST_CompareJump
 	DB SubSub&0xff,(ExpNegate&0ffh)-1
 	
@@ -564,8 +615,12 @@ PrintSubImpl:
 	RET
 
 GetVarLocationBVar:
-	RST_LDAXB_INXB
-	
+  RST_LDAXB_INXB_CPI
+  
+	; Test that we have a var
+	db 32
+	CNC Error
+
 GetVarLocation:
 ; A should contain a var token
 ; and B points to tbe location after
@@ -574,10 +629,6 @@ GetVarLocation:
 ; and B pointing to next char
 ; A will never be 255 on return
 
-	; Test that we have a var
-	CPI 32
-	CNC Error
-	
 	MVI H,VAR_SPACE/256
 	ADD A
 	MOV L,A
@@ -605,9 +656,10 @@ OutputString:
 ;Pointer in B points to string token marker
 	INX B
 OutputStringLoop:
-	RST_LDAXB_INXB
-	RST_CompareJump
-	DB StringToken,(OutputStringRet&0ffh)-1
+	RST_LDAXB_INXB_CPI
+	DB StringToken
+	RST_JZPage
+	DB (OutputStringRet&0ffh)-1
 OutputString_WithQuote:
 	RST_PutChar
 	RST_JZPage
@@ -627,20 +679,17 @@ FunctionCall:
 	
 	; fall through
 
+  ; This must be before Error so that it
+  ; can fall through
 ExpBracketedB:
-	RST_LDAXB_INXB
-	
-; This must be before Error so that it
-; can fall through
-ExpBracketed:
-	CPI LeftBraceToken&0ffh
+  RST_LDAXB_INXB_CPI
+	DB LeftBraceToken&0ffh
 	CNZ Error
 
 	RST_ExpEvaluate
 	
-	RST_LDAXB_INXB
-	
-	CPI RightBraceToken&0ffh
+	RST_LDAXB_INXB_CPI
+	DB RightBraceToken&0ffh
 	RZ
 	
 	; fall through
@@ -693,16 +742,19 @@ Ready:
 LineStartsWithInt:
 	; Get the line number into DE
 	INX B
-	RST_LDAXB_INXB
+	LDAX B
+	INX B
 	MOV E,A
-	RST_LDAXB_INXB
+	LDAX B
+	INX B
 	MOV D,A
 	
 	; Is it an integer all by itself? 
 	; If so then delete the line
-	LDAX B
-	RST_CompareJump
-	DB EndProgram&0ffh,(DeleteProgramLine&0ffh)-1
+	RST_LDAXB_INXB_CPI
+	DB EndProgram&0ffh
+	RST_JZPage
+	DB (DeleteProgramLine&0ffh)-1
 
 	; call GetLineNum to find either the line, or
 	; pointer to next location in program after it
@@ -807,6 +859,8 @@ ReverseLoop:
 	JMP ReverseLoop
 
 POPHAssignToVar_Prefix:
+	CALL GetLine
+
   POP B
   RST_ExpEvaluate
   POP B
@@ -823,22 +877,20 @@ POPHAssignToVar:
 	MOV M,D
 	
 	RET
+	
 
-; ListSubImpl must start at 150h This so that
+; ListLoop must start at 153h This so that
 ; LineNumSub is at 223h
 ; Any space freed prior to this address can be
 ; shifted forward by prefixing the subroutine
 ; above.
 
-; List statement implementation
-ListSubImpl:
-	LXI B,PROG_BASE
 ListLoop:
 	MVI A,' '
 	RST_PutChar
 	
-	RST_LDAXB_INXB
-	CPI EndProgram&0ffh
+	RST_LDAXB_INXB_CPI
+	DB EndProgram&0ffh
 	RZ
 	
   LXI H,ListLoop	; so that we can loop using RET
@@ -889,9 +941,11 @@ List_LineNum:
 	RST_PutChar
  
 List_Integer:
-  RST_LDAXB_INXB
+  LDAX B
+  INX B
 	MOV E,A
-	RST_LDAXB_INXB
+	LDAX B
+	INX B
 	MOV D,A
  	; fall through to PrintInteger
  	
@@ -968,24 +1022,25 @@ TokenList:
 	DB "GOSU",'B'+128
 	DB ReturnSub&0ffh
 	DB "RETUR",'N'+128
-	DB IfSub&0ffh
-	DB "I",'F'+128
 	DB InputSub&0ffh
 	DB "INPU",'T'+128
-	DB EndSub&0ffh
-	DB "EN",'D'+128
 	DB ForSub&0ffh
 	DB "FO",'R'+128
 	DB NextSub&0ffh
 	DB "NEX",'T'+128
+  DB IfSub&0ffh
+	DB "I",'F'+128
+	DB EndSub&0ffh
+	DB "EN",'D'+128
 	
 ; Before this are keywords allowed at run-time
+  DB ExecuteProgram&0ffh
+	DB "RU",'N'+128
 	DB ListSub&0ffh
 	DB "LIS",'T'+128
 	DB NewSub&0ffh
 	DB "NE",'W'+128
-	DB ExecuteProgram&0ffh
-	DB "RU",'N'+128
+	
 	
 	
 ; before operators are non-statement
@@ -1043,9 +1098,9 @@ LetSub:
 	PUSH H
 	
 	; Test that we have an equals sign
-	RST_LDAXB_INXB
+	RST_LDAXB_INXB_CPI
 	
-	CPI EqualSub&0ffh
+	DB EqualSub&0ffh
 	CNZ Error
 	
 	RST_ExpEvaluate
@@ -1080,23 +1135,6 @@ ReturnSub:
 	POP B ; Get pointer to program loc to return to
 	PCHL ; instead of RET
 
-IfSub:
-	RST_ExpEvaluate
-	MOV A,D
-	ORA E
-	RNZ
-
-	; If DE zero then fall through to next line
-	JMP AdvanceToNextLineNum 
-	
-EndSub:
-	JMP NewLineReady
-
-; last byte of JMP AdvanceToNedtLineNum
-; is 3, which is opcode for INX B, which
-; has no effect before JMP NewLineReady
-EndProgram equ EndSub-1
-
 InputSub:
 ; 20 bytes
 
@@ -1106,7 +1144,6 @@ InputSub:
 	
 	LXI H,INPUT_BUFFER
 	PUSH H
-	CALL GetLine
   
 	JMP POPHAssignToVar_Prefix
 
@@ -1162,27 +1199,40 @@ NextSubLoop:
 	
 	RET
 	
-ListSub:
-  JMP ListSubImpl
+IfSub:
+	RST_ExpEvaluate
+	MOV A,D
+	ORA E
+	RNZ
 
-NewSub:
-	RST 0
-	
+	; If DE zero then fall through to next line
+	JMP AdvanceToNextLineNum 
+
+EndSub:
+	JMP NewLineReady
+
+; last byte of JMP AdvanceToNextLineNum
+; is 3, which is opcode for INX B, which
+; has no effect before JMP NewLineReady
+EndProgram equ EndSub-1
+
 ExecuteProgram:
 	
 	; Point BC to first line
-	; Skip over the line number
-	LXI B,PROG_BASE+3
+	; Don't skip over the line number
+	; because we need the constant PROG_BASE
+	; at this location in memory
+	LXI B,PROG_BASE
 
 ExecuteProgramLoop:
 	LDAX B
 
 	; Check that it is a token less than
-	; ListSub
-	CPI ListSub&0ffh
+	; ExecuteProgram
+	CPI ExecuteProgram&0ffh
 	
-	; if it's less than ListSub then it 
-	; is also less tban ExecuteProgram, so skip over 
+	; if it's less than ExecuteProgram then it 
+	; is also less than ListSub, so skip over 
 	; two bytes
 	
 	DB 11h ; opcode for LXI D
@@ -1190,8 +1240,8 @@ ExecuteProgramLoop:
 ExecuteDirect:
 	
 	; Check that it is a token between
-	; LinenumSub and ExecuteProgram
-	CPI (ExecuteProgram+1)&0ffh
+	; LinenumSub and ListSub
+	CPI (ListSub+1)&0ffh
 	CNC Error
 	
 	INX B
@@ -1215,13 +1265,20 @@ ExecuteDirect:
 	; Carry is clear when we do this
 	PCHL
 
+NewSub:
+	RST 0
+	
+ListSub:
+	LXI B,PROG_BASE
+  JMP ListLoop
+	
 ; ( ) , TO STEP tokens must have values between 
 ; statements and functions
 
-ToToken equ ExecuteProgram+1
-StepToken equ ExecuteProgram+2
-RightBraceToken equ ExecuteProgram+3
-CommaToken equ ExecuteProgram+4
+ToToken equ ListSub+1
+StepToken equ ListSub+2
+RightBraceToken equ ListSub+3
+CommaToken equ ListSub+4
 
 AbsSub:
 	; A = right brace token, which has high bit
@@ -1356,7 +1413,6 @@ DivSub:
 
 DivideHL:
 ;Divide HL by DE
-
 	; Make HL and DE different signs
   MOV A,H
   CALL AbsSub
@@ -1368,6 +1424,13 @@ DivideHL:
 	PUSH B
 	LXI B,0ffffh
 	
+; Do the test for zero here because we want the
+; JZ to be on page 3
+	MOV A,D
+  ORA E
+DivJZError:
+  JZ Error
+ 
 DivLoop:
 	INX B
 	DAD D
@@ -1409,8 +1472,13 @@ DivNoRestore:
 ; as NoCharClass
 
 NLTestTrue:
-	; TODO should be error if we are in the middle
+	; error if we are in the middle
 	; of a string
+	MOV A,L
+	RST_CompareJump
+	DB QuoteClassExpEnd&0ffh
+	DB (DivJZError-1)&0ffh
+	
 	POP H
 	RET
 
@@ -1691,7 +1759,8 @@ GetLineNumLoop:
 	INX B
 	
 	; Test for DE <= (BC), and return if true
-	RST_LDAXB_INXB
+	LDAX B
+	INX B
 	SUB E
 	MOV L,A
 	LDAX B
@@ -1711,8 +1780,8 @@ ATNLN_RetNZ: ; shared code. Returns NZ if we know
 	RET
 
 ATNLN_String:
-	RST_LDAXB_INXB
-	CPI StringToken
+	RST_LDAXB_INXB_CPI
+	DB StringToken
 	JNZ ATNLN_String
 	
 	DB 0c2h ; opcode for JNZ eats 2 bytes
@@ -1754,9 +1823,9 @@ ForSubImpl:
 	
 	PUSH H ; stack has var addr + 1 (VL+1), EPL
 	
-	RST_LDAXB_INXB
+	RST_LDAXB_INXB_CPI
 	
-	CPI ToToken&0ffh
+	DB ToToken&0ffh
 	CNZ Error
 	
 	RST_ExpEvaluate
