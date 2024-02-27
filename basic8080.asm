@@ -336,7 +336,7 @@ ORG 00h
 	LXI SP,ExecuteProgram+1
 	POP H
 	SHLD PROG_PTR
-	POP H
+	INX H
 
 .macro RST_PutChar
 RST 1
@@ -1205,19 +1205,21 @@ IfSub:
 	JMP AdvanceToNextLineNum 
 
 ExecuteProgram:
+	STC ; skip over JNC Ready in a minute
+	
 	; Point BC to first line
 	; Don't skip over the line number
 	; because we need the constant PROG_BASE
 	; at this location in memory
 	LXI B,PROG_BASE
 
-	db 11h  ; LXI D eats 2 bytes
 EndSub:
-	JMP Ready
+	JNC Ready
 
 ; last byte of PROG_BASE
 ; is 4, which is opcode for INR B, which
-; has no effect before JMP Ready
+; has no side effect before JNC Ready
+
 EndProgram equ EndSub-1
 ; TODO above is wrong
 
