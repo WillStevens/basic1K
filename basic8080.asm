@@ -8,8 +8,7 @@
 ; 2. DivSub is at address 2xxh (i.e. <= 2ffh)
 ; 3. Program does not exceed 1k
 ; 4. In ClassLookup, check that QuoteClass
-;    is the only class subroutine with an
-;    odd address (i.e. bit 0=1)
+;    has LSB different from othet class subs
 ;
 ; 2023-03-03 About 450 bytes long
 ; 2023-03-08 About 750 bytes long
@@ -319,16 +318,15 @@ ORG 00h
   ; I would like this to be:
   ; LXI H,PROG_BASE
 	; SHLD PROG_PTR
-	; JMP NewLineReady
+	; JMP Ready
 	;
 	; But this doesn't fit in 8 bytes.
 	; Instead we find a place in the program
-	; that has JMP NewLineReady followed by
-	; LXI B,PROG_BASE, and set SP to that 
+	; that has LXI B,PROG_BASE, and set SP to that 
 	; address, the POP H from the stack and 
-	; store it in PROG_PTR, then DCX SP means
+	; store it in PROG_PTR, then INX SP means
 	; that when we fall throuhh to PutChar,
-	; the RET will jump to NewLineReady
+	; the RET will jump to Ready
 	; 
 	; (It means that on reset and RST 0 a char
 	; will be output that depends on the value of
@@ -338,7 +336,7 @@ ORG 00h
 	LXI SP,ExecuteProgram+1
 	POP H
 	SHLD PROG_PTR
-	DCX SP
+	POP H
 
 .macro RST_PutChar
 RST 1
@@ -537,6 +535,11 @@ ExpEvaluateOp:
 	
 	; Does operator on stack have GTE precedence? 
 	; (or end of expression, when A < operators)
+	; 2024-02-26 at time of writing, if divsub
+	; can be made to equal to F4, then ORing
+	; with 14h here will make * and / equal
+	; precedence, without adversely affecting
+	; others
 	DCR A
 	CMP L
 	
@@ -702,9 +705,6 @@ Error:
 	RST_PutChar
 	POP D
 	CALL PrintInteger
-NewLineReady:
-	MVI A,10
-	RST_PutChar
 	
 	; fall through
 	
@@ -714,6 +714,9 @@ Ready:
 	; GOSUB with no RETURN errors
 	
 	LXI SP,STACK_INIT
+	
+	MVI A,10
+	RST_PutChar
 	
 	LHLD PROG_PTR
 	PUSH H ; push it because we need it after 
@@ -876,14 +879,7 @@ POPHAssignToVar:
 	INX H
 	MOV M,D
 	
-	RET
-	
-
-; ListLoop must start at 153h This so that
-; LineNumSub is at 223h
-; Any space freed prior to this address can be
-; shifted forward by prefixing the subroutine
-; above.
+	RET 
 
 ListLoop:
 	MVI A,' '
@@ -997,12 +993,12 @@ List_Var:
   ADI '@'
   RST_PutChar
   RET ; byte before TokenList must have high bit set
-
+  
 
 ; Index to subroutine address must not overlap with other tokens
 ; Currently TokenList starts toward the end
 ; of page 1, and DivSub begins towards the end
-; of page 2 and the subroutine extends into page 2
+; of page 2 and the subroutine extends into page 3
 
 ; order in this list must make sure that a
 ; token A that is a left substring of another
@@ -1208,46 +1204,38 @@ IfSub:
 	; If DE zero then fall through to next line
 	JMP AdvanceToNextLineNum 
 
-EndSub:
-	JMP NewLineReady
-
-; last byte of JMP AdvanceToNextLineNum
-; is 3, which is opcode for INX B, which
-; has no effect before JMP NewLineReady
-EndProgram equ EndSub-1
-
 ExecuteProgram:
-	
 	; Point BC to first line
 	; Don't skip over the line number
 	; because we need the constant PROG_BASE
 	; at this location in memory
 	LXI B,PROG_BASE
 
+	db 11h  ; LXI D eats 2 bytes
+EndSub:
+	JMP Ready
+
+; last byte of PROG_BASE
+; is 4, which is opcode for INR B, which
+; has no effect before JMP Ready
+EndProgram equ EndSub-1
+; TODO above is wrong
+
 ExecuteProgramLoop:
 	LDAX B
-
-	; Check that it is a token less than
-	; ExecuteProgram
-	CPI ExecuteProgram&0ffh
-	
-	; if it's less than ExecuteProgram then it 
-	; is also less than ListSub, so skip over 
-	; two bytes
-	
-	DB 11h ; opcode for LXI D
 	
 ExecuteDirect:
 	
+	SUI LineNumSub&0ffh
+	
 	; Check that it is a token between
 	; LinenumSub and ListSub
-	CPI (ListSub+1)&0ffh
+	CPI (ListSub-LineNumSub+1)&0ffh
 	CNC Error
 	
 	INX B
 
-	CPI LineNumSub&0ffh
-	CC Error
+	ADI LineNumSub&0ffh
 	
 	; Carry is clear now
 	
@@ -1404,7 +1392,7 @@ DontAdd:
 	XCHG
 	POP B
 	RET
-
+	
 DivSub:
 ; 31 bytes
 ;Divide HL by DE
@@ -1475,7 +1463,7 @@ NLTestTrue:
 	; error if we are in the middle
 	; of a string
 	MOV A,L
-	RST_CompareJump
+  RST_CompareJump
 	DB QuoteClassExpEnd&0ffh
 	DB (DivJZError-1)&0ffh
 	
