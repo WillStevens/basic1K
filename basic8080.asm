@@ -336,7 +336,7 @@ ORG 00h
 	LXI SP,ExecuteProgram+1
 	POP H
 	SHLD PROG_PTR
-	INX H
+	INX SP
 
 .macro RST_PutChar
 RST 1
