@@ -324,7 +324,7 @@ ORG 00h
 	; Instead we find a place in the program
 	; that has LXI B,PROG_BASE, and set SP to that 
 	; address, the POP H from the stack and 
-	; store it in PROG_PTR, then INX SP means
+	; store it in PROG_PTR, then POP H means
 	; that when we fall throuhh to PutChar,
 	; the RET will jump to Ready
 	; 
@@ -333,7 +333,7 @@ ORG 00h
 	; A at the time, but worth it to save several
 	; bytes)
 
-	LXI SP,ExecuteProgram+1
+	LXI SP,ExecuteProgram+2
 	POP H
 	SHLD PROG_PTR
 	INX SP
@@ -784,8 +784,7 @@ LineStartsWithInt:
 	PUSH D ; middle
 	
 	XRA A
-	; this will clear carry flag
-	; if not on page boundary
+	
 	RST_JZPage
 	DB (Entry&0ffh)-1
 
