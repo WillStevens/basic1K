@@ -253,6 +253,15 @@
 ;     direct mode would will probably save a
 ;     sufficient number of bytes to finish all
 ;     outstanding work
+; 2024-02-28 Sveral changes related to issues
+;     listed above, Divide by zero and 
+;     unterminated string now generate error
+;     messages. 2 bytes free which should be 
+;     enough to make * and / equal precedence, 
+;     but will test everything else first. Issue 
+;     about tokens with excess chars not being 
+;     detected as errors will remain unfixed in 
+;     first release.
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -1591,18 +1600,15 @@ DigitClassNotEnd:
   JMP NextCharLoop
   
 QuoteClassExpEnd:
-	
-  ; TODO check for newline and
-  ; generate error
   
   ; A is equal to:
 	; char class (C) XOR QuoteCharClassExpEnd
 	
 	; so long as QuoteCharClass is the only class
 	; with an odd address or the only one
-	; with an even address then tbis will only
+	; with an even address then A will only
 	; have LSB=1 if current char class
-	; is QuoteCharClass
+	; is QuoteCharClass - i.e. end of string
 	
 	db 0e6h ; opcode for ANI eats next byte
 	        ; (which is 2dh lsbits are 01)
@@ -1641,7 +1647,8 @@ AlphaClass:
 	; if NZ then we will just
 	; have written a different class char:
 	; good, this ensures no spurious
-	; strcmp matches
+	; strcmp matches from leftover
+	; buffer contents
 	
 	; now we need to decide whether to jump to:
 	; FreshStart - if its the last quote in
@@ -1653,12 +1660,15 @@ AlphaClass:
 	RST_JZPage
 	DB (NLTest&0ffh)-1
 	
-	MOV A,L
+	; A will be 1 if and only if this is the
+	; end of string
 	RST_CompareJump
-	DB QuoteClassExpEnd&0ffh,(FreshStart&0ffh)-1
+	DB 1,(FreshStart&0ffh)-1
 	
 TokenClassEnd:
 
+	; Make H point to the start of the token
+	; to be looked up
 	XTHL
 	DAD D
 	
@@ -1666,7 +1676,7 @@ TokenClassEnd:
   ; E=-2
   ; TODO These aren't the only conditions that 
   ; could lead to the test below passing - 
-  ; e.g. if 7,6,5=001 and E=10011110
+  ; e.g. if 7,6,5=001 and E=10011110.
 	MOV A,M
 	XRI 040h
 	MOV D,A
@@ -1835,7 +1845,7 @@ ForWithStep:
 	INX B
 	RST_ExpEvaluate
 	
-	POP H ; was INX SP, INX SP
+	POP H
 	POP H
 	PUSH B	; stack contains -T,LS,EPL
 	DCX SP
