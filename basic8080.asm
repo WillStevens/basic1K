@@ -1626,7 +1626,8 @@ QuoteClass:
 	; we are in a string and haven't reached 
 	; last quote
 	
-	db 3eh ; opcode for MVI A eats next byte
+	; carry is clear here
+	db 0dah ; opcode for JC eats next 2 bytes
 LT0Class:
 	INX H; next char should always count as 
 	      ; different class
