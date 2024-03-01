@@ -262,6 +262,10 @@
 ;     about tokens with excess chars not being 
 ;     detected as errors will remain unfixed in 
 ;     first release.
+; 2024-03-01 Found bug where recent changes
+;     caused DeleteProgramLine to move page.
+;     In the course of fixing it, may have saved
+;     5 bytes. Nees to test that fix is correct.
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -333,7 +337,7 @@ ORG 00h
 	; Instead we find a place in the program
 	; that has LXI B,PROG_BASE, and set SP to that 
 	; address, the POP H from the stack and 
-	; store it in PROG_PTR, then POP H means
+	; store it in PROG_PTR, then INX SP means
 	; that when we fall throuhh to PutChar,
 	; the RET will jump to Ready
 	; 
@@ -745,34 +749,33 @@ Ready:
 	; but we've already got that in A
 	MVI M,EndProgram&0ffh
 	
-	PUSH H
-	POP B
-	
 	CPI IntegerToken
 	JNZ ExecuteDirect
 	
 LineStartsWithInt:
 	; Get the line number into DE
-	INX B
-	LDAX B
-	INX B
-	MOV E,A
-	LDAX B
-	INX B
-	MOV D,A
+	INX H
+	MOV E,M
+	INX H
+	MOV D,M
+	INX H
 	
 	; Is it an integer all by itself? 
 	; If so then delete the line
-	RST_LDAXB_INXB_CPI
-	DB EndProgram&0ffh
-	RST_JZPage
-	DB (DeleteProgramLine&0ffh)-1
-
+	MOV H,M
+	
 	; call GetLineNum to find either the line, or
 	; pointer to next location in program after it
-	
 	CALL GetLineNum
+	MOV A,H
+	LHLD PROG_PTR
+	PUSH PSW
 	
+	RST_CompareJump
+	DB EndProgram&0ffh
+	DB (DeleteProgramLine&0ffh)-1
+	
+	POP PSW
 	; if GetLineNum returns a match then this is
 	; an error, user must delete line first
 	CZ Error
@@ -782,7 +785,6 @@ LineStartsWithInt:
 	; middle = PROG_PTR
 	; last = PROG_PARSE_PTR
 	
-	LHLD PROG_PTR
 	MVI M,LineNumSub&0ffh; undo what we did earlier
 	XCHG
 	LHLD PROG_PARSE_PTR
@@ -799,9 +801,8 @@ LineStartsWithInt:
 
 DeleteProgramLine:
 ; 25 bytes
-	PUSH H
-	CALL GetLineNum
-	POP H
+	POP PSW
+	
 	JNZ Ready		; if line not found, do nothing
 
 	PUSH H
@@ -1424,6 +1425,9 @@ DivideHL:
 	
 ; Do the test for zero here because we want the
 ; JZ to be on page 3
+; TODO - need to move this to earlier in DivSub
+; otherwise something other than the call address
+; is on the stack. (although actually maybe it is useful to have an address within the BASIC program)
 	MOV A,D
   ORA E
 DivJZError:
@@ -1661,10 +1665,9 @@ AlphaClass:
 	RST_JZPage
 	DB (NLTest&0ffh)-1
 	
-	; A will be 1 if and only if this is the
-	; end of string
+  MOV A,L
 	RST_CompareJump
-	DB 1,(FreshStart&0ffh)-1
+	DB QuoteClassExpEnd&0ffh,(FreshStart&0ffh)-1
 	
 TokenClassEnd:
 
@@ -1742,7 +1745,8 @@ DB 0,FreshStart&0ffh
 GetLineNum:
 	; Line number is in DE, look it up in the program and set BC to the line num token
 	; DE is preserved
-	; HL is not preserved
+	; H is preserved
+	; L is not preserved
 	; 
 	; return with Z set if successful
 	;
