@@ -45,7 +45,7 @@
 620 NEXT
 630 LET C=@(W*Y+X)
 635 LET C=(C=1)+(C=3)
-640 LET D=((S=2)+(S=3))*C+(S=3)*(1-C)
+640 LET D=((S=4)+(S=3))*C+(S=3)*(1-C)
 650 LET C=C+2*D
 660 LET @(W*Y+X)=C
 670 RETURN
