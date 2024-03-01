@@ -871,6 +871,11 @@ ReverseLoop:
 	JMP ReverseLoop
 
 POPHAssignToVar_Prefix:
+	PUSH B
+	
+	LXI H,INPUT_BUFFER
+	PUSH H
+
 	CALL GetLine
 
   POP B
@@ -1141,13 +1146,8 @@ ReturnSub:
 	PCHL ; instead of RET
 
 InputSub:
-; 20 bytes
 
 	CALL GetVarLocationBVar
-	PUSH H
-	PUSH B
-	
-	LXI H,INPUT_BUFFER
 	PUSH H
   
 	JMP POPHAssignToVar_Prefix
