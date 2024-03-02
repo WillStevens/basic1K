@@ -277,7 +277,9 @@
 ;     lander.bas, reverse.bas, life.bas, 
 ;     operatortests.bas, operatortests2.bas, 
 ;     looptests.bas
-;
+; 2024-03-02 Freed up 1 byte by removing 
+;     redundant STC
+
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
 ; 1K RAM from 0400h-07FFh
@@ -774,14 +776,15 @@ LineStartsWithInt:
 	
 	; Is it an integer all by itself? 
 	; If so then delete the line
-	MOV H,M
 	
 	; call GetLineNum to find either the line, or
 	; pointer to next location in program after it
+	
+	MOV H,M ; preserve M (GetLineNum doesn't touch H)
 	CALL GetLineNum
 	MOV A,H
 	LHLD PROG_PTR
-	PUSH PSW
+	PUSH PSW 
 	
 	RST_CompareJump
 	DB EndProgram&0ffh
@@ -832,8 +835,12 @@ DeleteProgramLine:
 	RST_NegateDE
 	
 	DAD D ; HL=PROG_PTR+first-middle
+	
+	; because DAD D above always causes HL
+	; to decrease, it must set carry
+	; so STC below is not needed
 
-	STC ; skip first reverse in memory rotate
+	;STC ; skip first reverse in memory rotate
 			; because we don't care about the
 			; line being deleted
 	
@@ -884,6 +891,8 @@ ReverseLoop:
 
 POPHAssignToVar_Prefix:
 
+	PUSH H
+	
 	CALL GetLine
 
   POP B
@@ -1159,7 +1168,6 @@ InputSub:
   
   LXI H,INPUT_BUFFER
   PUSH B
-	PUSH H
 	
 	JMP POPHAssignToVar_Prefix
 
