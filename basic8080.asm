@@ -273,7 +273,11 @@
 ;     before after discovering that some
 ;     terminals need this. Need to free up
 ;     1 byte to fix operator precedence issue
-
+; 2024-03-02 This version correcly runs
+;     lander.bas, reverse.bas, life.bas, 
+;     operatortests.bas, operatortests2.bas, 
+;     looptests.bas
+;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
 ; 1K RAM from 0400h-07FFh
