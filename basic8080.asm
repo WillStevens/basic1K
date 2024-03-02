@@ -265,7 +265,14 @@
 ; 2024-03-01 Found bug where recent changes
 ;     caused DeleteProgramLine to move page.
 ;     In the course of fixing it, may have saved
-;     5 bytes. Nees to test that fix is correct.
+;     5 bytes. Need to test that fix is correct.
+; 2024-03-01 Fixed a bug introduced on 28 Feb 
+;     where ExecuteDirect was called without
+;     setting B. Wrote 'game of life' example
+;     program. When printing newline, added CR
+;     before after discovering that some
+;     terminals need this. Need to free up
+;     1 byte to fix operator precedence issue
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -278,12 +285,12 @@ RAM_TOP equ 0800h ; 1 more than top byte of RAM
 
 ; IntegerToken must be one more than last var
 IntegerToken equ 32 ; followed by 16-bit integer
-QuestionMarkToken equ 33
+QuestionMarkToken equ 33 ; indicates syntax error
 StringToken equ 34 ; followed by string, followed by end quote
 
 ; Callable tokens are low byte of subroutine to call
 
-; Errors are display as Ex where x is an error
+; Errors are displayed as Ex where x is an error
 ; code which is tbe address on the stack when
 ; Error subroutine is called.
 
@@ -295,9 +302,6 @@ StringToken equ 34 ; followed by string, followed by end quote
 ; space do nothing then its not a problem.
 ; If memory space repeats and lower 1K 
 ; is ROM then also not much of a problem.
-
-; Stack is just below input buffer to save code
-; when initialising
 
 org RAM_TOP-8
 INPUT_BUFFER:
@@ -626,6 +630,9 @@ PrintSubImpl:
 	; last one was a comma
 	POP PSW
 	RC ; return without newline if it was comma
+CRLF:
+	MVI A,13
+	RST_PutChar
 	MVI A,10
 	RST_PutChar
 	RET
@@ -712,8 +719,7 @@ ExpBracketedB:
 
 ;Display error code and go back to line entry
 Error:
-	MVI A,10
-	RST_PutChar
+	CALL CRLF
 	MVI A,'E'
 	RST_PutChar
 	POP D
@@ -728,8 +734,7 @@ Ready:
 	
 	LXI SP,STACK_INIT
 	
-	MVI A,10
-	RST_PutChar
+	CALL CRLF
 	
 	LHLD PROG_PTR
 	PUSH H ; push it because we need it after 
@@ -741,6 +746,9 @@ Ready:
 	
 	SHLD PROG_PARSE_PTR
 	POP H
+	
+	PUSH H
+	POP B
 	
 	MOV A,M
 	; Regardless of which branch taken
@@ -871,10 +879,6 @@ ReverseLoop:
 	JMP ReverseLoop
 
 POPHAssignToVar_Prefix:
-	PUSH B
-	
-	LXI H,INPUT_BUFFER
-	PUSH H
 
 	CALL GetLine
 
@@ -947,8 +951,7 @@ List_Token_String_Loop:
   RET
 	
 List_LineNum:
-	MVI A,10
-	RST_PutChar
+	CALL CRLF
  
 List_Integer:
   LDAX B
@@ -1150,6 +1153,10 @@ InputSub:
 	CALL GetVarLocationBVar
 	PUSH H
   
+  LXI H,INPUT_BUFFER
+  PUSH B
+	PUSH H
+	
 	JMP POPHAssignToVar_Prefix
 
 ForSub:
