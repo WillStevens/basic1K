@@ -4,7 +4,7 @@
 ;
 ; Post-assembly checklist
 ;
-; 1. LineNumSub is at address 223h
+; 1. LineNumSub is >= address 223h
 ; 2. DivSub is at address 2xxh (i.e. <= 2ffh)
 ; 3. Program does not exceed 1k
 ; 4. In ClassLookup, check that QuoteClass
@@ -279,6 +279,12 @@
 ;     looptests.bas
 ; 2024-03-02 Freed up 1 byte by removing 
 ;     redundant STC
+; 2024-03-03 Added test to make * same
+;     precedence as / (needs testing).
+;     Change RNG from XORSHIFT to LCG.
+;     This saved 3 bytes.
+;     Need to experiment with LCG constant
+;     for best RNG performance.
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -477,7 +483,7 @@ ExpEvaluate:
 
 ; This puts a marker on the stack to
 ; detect when there are operators on the
-; stack - operators all have 3 as the hi byte
+; stack - operators all have 2 as the hi byte
 ; but this call puts hi byte 0 on the stack
 
 	CALL ExpEvaluateNum
@@ -548,6 +554,12 @@ ExpEvaluateOp:
 	RST_CompareJump
 	DB 0,(SkipExpApplyOp&0ffh)-1
 	
+	; if L is equal to MulSub then apply it.
+	; this gives * same precedence as /
+	MOV A,L
+	RST_CompareJump
+	DB (MulSub&0ffh),(ExpApplyOp&0ffh)-1
+	
 	LDAX B
 	
 	; No longer needed since case below
@@ -558,15 +570,11 @@ ExpEvaluateOp:
 	
 	; Does operator on stack have GTE precedence? 
 	; (or end of expression, when A < operators)
-	; 2024-02-26 at time of writing, if divsub
-	; can be made to equal to F4, then ORing
-	; with 14h here will make * and / equal
-	; precedence, without adversely affecting
-	; others
 	DCR A
 	CMP L
 	
-	JC ExpApplyOp ; yes, dont apply op
+	JC ExpApplyOp ; apply the operator
+								; that was on the stack
 	
 SkipExpApplyOp:
 	PUSH H		; put operator that was on stack
@@ -574,7 +582,7 @@ SkipExpApplyOp:
 	
 	LDAX B
 	
-	CPI Operators&0ffh ; operators or right bracket
+	CPI Operators&0ffh
 	; Is it the end of the expression?
 	RC
 	
@@ -1317,37 +1325,57 @@ UsrSub:
 	XCHG
 	PCHL
 
-; XORSHIFT taken from here
-; https://wikiti.brandonw.net/index.php?title=Z80_Routines:Math:Random
 
 RndSub:
+; LCG 
+; don't use low byte
+; need to explore constant for best performance
+	PUSH D
 	LHLD RNG_SEED
-	MOV A,H
-  RAR
-  MOV A,L
-  RAR
-  XRA H
-  MOV H,A
-  MOV A,L
-  RAR
-  MOV A,H
-  RAR
-  XRA L
-  MOV L,A
-  XRA H ; clears carry
-  MOV H,A
-  SHLD RNG_SEED
+	LXI D,1543
+	CALL MulSub ; A is zero after this
+	XCHG
+	INX H
+	SHLD RNG_SEED
+	; Use only the high byte to get a value
+	; between 0 and 255
+	MOV L,H
+	MOV H,A
+	POP D
+	
+	CALL DivideHL
+  XCHG
+  RET
+
+; XORSHIFT taken from here
+; https://wikiti.brandonw.net/index.php?title=Z80_Routines:Math:Random
+	;LHLD RNG_SEED
+	;MOV A,H
+  ;RAR
+  ;MOV A,L
+  ;RAR
+  ;XRA H
+  ;MOV H,A
+  ;MOV A,L
+  ;RAR
+  ;MOV A,H
+  ;RAR
+  ;XRA L
+  ;MOV L,A
+  ;XRA H ; clears carry
+  ;MOV H,A
+  ;SHLD RNG_SEED
   
   ; carry is clear at this point
-  RAR
-  MOV H,A
+  ;RAR
+  ;MOV H,A
   
   ; above 2 bytes give us a value between
   ; 0 and 32767
   
-  CALL DivideHL
-  XCHG
-  RET
+  ;CALL DivideHL
+  ;XCHG
+  ;RET
 
 
 ; Token values >= this are all operators
