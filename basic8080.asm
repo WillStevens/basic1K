@@ -279,17 +279,23 @@
 ;     looptests.bas
 ; 2024-03-02 Freed up 1 byte by removing 
 ;     redundant STC
-; 2024-03-03 Added test to make * same
+; 2024-03-03 Added code to make * same
 ;     precedence as / (needs testing).
-;     Change RNG from XORSHIFT to LCG.
+;     Changed RNG from XORSHIFT to LCG.
 ;     This saved 3 bytes.
 ;     Need to experiment with LCG constant
 ;     for best RNG performance.
+;     Behaviour of RNG function changed so
+;     that max valid input parameter is 256,
+;     because low order bits of RNG have
+;     low period. Only high ordet bits of
+;     RNG are used for return value.
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
 ; 1K RAM from 0400h-07FFh
 
+RAM_BASE equ 0400h
 RAM_TOP equ 0800h ; 1 more than top byte of RAM
 
 ; Token values
@@ -315,33 +321,21 @@ StringToken equ 34 ; followed by string, followed by end quote
 ; If memory space repeats and lower 1K 
 ; is ROM then also not much of a problem.
 
-org RAM_TOP-8
-INPUT_BUFFER:
-STACK_INIT:
-
-ORG 0400h
+INPUT_BUFFER equ RAM_TOP-8
+STACK_INIT equ RAM_TOP-8
 
 ; this must be on a 256 byte boundary
-VAR_SPACE:
+VAR_SPACE equ RAM_BASE
 	; 30 words, first of which is not
 	; accessible to user, so can be
 	; used for PROG_PTR
-PROG_PTR:
-	DW 0
-	
-	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0
-	DW 0,0,0,0,0,0,0,0,0,0,0,0,0,0
-	DW 0
-	
+PROG_PTR equ RAM_BASE
 	; 2 words accessible to user as variables
-	; 30 and 31
-PROG_PARSE_PTR:
-	DW 0
-RNG_SEED:
-	DW 1 ; TODO initialise this in code
-			 ; it can't be zero
-			 
-PROG_BASE:
+	; 30 and 31 (^ and _)
+PROG_PARSE_PTR equ RAM_BASE+60
+RNG_SEED equ RAM_BASE+62
+
+PROG_BASE equ RAM_BASE+64
 
 ORG 00h
   ; I would like this to be:
@@ -354,10 +348,10 @@ ORG 00h
 	; that has LXI B,PROG_BASE, and set SP to that 
 	; address, the POP H from the stack and 
 	; store it in PROG_PTR, then INX SP means
-	; that when we fall throuhh to PutChar,
+	; that when we fall through to PutChar,
 	; the RET will jump to Ready
 	; 
-	; (It means that on reset and RST 0 a char
+	; (It means that on reset and NEW a char
 	; will be output that depends on the value of
 	; A at the time, but worth it to save several
 	; bytes)
@@ -378,21 +372,27 @@ ORG 08h
 PutChar:
 	; port 2 is for char I/O
 	OUT 2
-PutCharWaitLoop: ; address 001ah
-  XRA A
-  RET ; TODO change if targetting hardware
+PutCharWaitLoop: ; address 000ah
+  ; TODO change these fee instructions
+  ; if targetting hardware
   
+  XRA A 
+  RET
+
 	;IN 1
 	ANI 040h
 	RZ
 	db 0c3h ; opcode for JMP
+	        ; the following two bytes are 
+	        ; 0ah and 00h, so this jumps to
+	        ; PutCharWaitLoop
 	
 .macro RST_LDAXB_INXB_CPI
 RST 2
 .endm
 ORG 10h
 	LDAX B ; opcode 0ah
-	NOP
+	NOP    ; opcode 00h
 	INX B
 	XTHL
 	CMP M
@@ -1328,11 +1328,13 @@ UsrSub:
 
 RndSub:
 ; LCG 
-; don't use low byte
-; need to explore constant for best performance
+; don't use low byte in return value.
+; Multiplier 47989 is mentioned here:
+; https://groups.google.com/g/prng/c/evszGs76o1w?pli=1
+
 	PUSH D
 	LHLD RNG_SEED
-	LXI D,1543
+	LXI D,47989
 	CALL MulSub ; A is zero after this
 	XCHG
 	INX H
