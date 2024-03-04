@@ -1,0 +1,7 @@
+10 LET _ = 0 
+20 LET I = 0 
+30 LET A = RND ( 256 ) 
+40 IF _ = 0 GOTO 70 
+50 LET I = I + 1 
+60 GOTO 30 
+70 PRINT I 
