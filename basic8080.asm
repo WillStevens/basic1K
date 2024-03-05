@@ -290,13 +290,16 @@
 ;     because low order bits of RNG have
 ;     low period. Only high ordet bits of
 ;     RNG are used for return value.
+; 2024-03-04 Altered EndProgram address.
+;     Temporarily tried making RAM start at 1000h
+;     to check that this doesn't cause problems
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
-; 1K RAM from 0400h-07FFh
+; 1K RAM from 1000h-13FFh
 
-RAM_BASE equ 0400h
-RAM_TOP equ 0800h ; 1 more than top byte of RAM
+RAM_BASE equ 1000h
+RAM_TOP equ 1400h ; 1 more than top byte of RAM
 
 ; Token values
 ; 0-31 are variables (0 = @)
@@ -1243,6 +1246,10 @@ IfSub:
 ExecuteProgram:
 	STC ; skip over JNC Ready in a minute
 	
+EndProgram: ; executes the JNC Ready
+					  ; don't care what happens to BC
+					  ; if we are jumping to Ready
+					  
 	; Point BC to first line
 	; Don't skip over the line number
 	; because we need the constant PROG_BASE
@@ -1251,13 +1258,6 @@ ExecuteProgram:
 
 EndSub:
 	JNC Ready
-
-; last byte of PROG_BASE
-; is 4, which is opcode for INR B, which
-; has no side effect before JNC Ready
-
-EndProgram equ EndSub-1
-; TODO above is wrong
 
 ExecuteProgramLoop:
 	LDAX B
