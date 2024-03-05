@@ -1,6 +1,6 @@
 1 GOTO 5
 2 PRINT "0102A0A1AAFF"
-4 PRINT "Work in progress"
+4 PRINT "Work in progress."
 5 PRINT ^
 10 LET X=4096+64
 11 PRINT X
