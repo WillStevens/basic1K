@@ -293,6 +293,8 @@
 ; 2024-03-04 Altered EndProgram address.
 ;     Temporarily tried making RAM start at 1000h
 ;     to check that this doesn't cause problems
+; 2024-03-06 Changed IO to support Stefan Tramms
+;     8080 emulator.
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -373,8 +375,8 @@ ORG 08h
 ; PutChar must return with Z set
 
 PutChar:
-	; port 2 is for char I/O
-	OUT 2
+	; port 1 is for char I/O
+	OUT 1
 PutCharWaitLoop: ; address 000ah
   ; TODO change these fee instructions
   ; if targetting hardware
@@ -1558,14 +1560,15 @@ NLTest:
 	DB 10,(NLTestTrue&0ffh)-1
 	
 NextCharLoop:
-	; This code is compatable with Dick Whipple's
-	; Front Panel 8080 emulator
+	; This code is compatable with Stefan Tramm's
+	; 8080 emulator
+	IN 0
+	ANA A
+	RST_JZPage
+	db (NextCharLoop&0ffh)-1
 	IN 1
-	ANI 80h
-	JNZ NextCharLoop
-	IN 2
-	
 	MOV B,A
+	OUT 1 ; echo
 	
   ; Do we have the same class as before?
   PUSH H
