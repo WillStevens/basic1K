@@ -1,5 +1,5 @@
 1 GOTO 5
-2 PRINT "0102A0A1AAFF"
+2 PRINT "111234C9"
 4 PRINT "A is even. Num bytes is even"
 5 PRINT ^
 6 LET A=2048
