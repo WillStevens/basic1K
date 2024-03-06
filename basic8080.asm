@@ -1185,8 +1185,15 @@ InputSub:
 	JMP POPHAssignToVar_Prefix
 
 ForSub:
+	; First part is just like let statement
+	CALL LetSub
 	JMP ForSubImpl
 
+	; TODO - perhaps this saves 2 bytes?
+	;LXI H,ForSubImpl
+	;PUSH H
+	; fall through to LetSub
+	
 NextSub:
 	POP H ; discard return address
 	; stack contains VL+1,S,-T,LS,EPL
@@ -1525,6 +1532,12 @@ DivNoRestore:
 ; as NoCharClass
 
 NLTestTrue:
+	; A contains 13 at this point
+	; we want to ooutput line feed (10)
+	; because H is 3, we can subtract this from A
+	SUB H
+	RST_PutChar
+	
 	; error if we are in the middle
 	; of a string
 	MOV A,L
@@ -1533,6 +1546,7 @@ NLTestTrue:
 	DB (DivJZError-1)&0ffh
 	
 	POP H
+	
 	RET
 
 GetLine:
@@ -1557,7 +1571,7 @@ NLTest:
   MOV A,B
 	; check for newline
 	RST_CompareJump
-	DB 10,(NLTestTrue&0ffh)-1
+	DB 13,(NLTestTrue&0ffh)-1
 	
 NextCharLoop:
 	; This code is compatable with Stefan Tramm's
@@ -1874,8 +1888,6 @@ ForSubImpl:
 	; Keep it there even though it isn't used by 
 	; ForSub, it will be used by NextSub
 	
-	; First part is just like let statement
-	CALL LetSub
 	
 	PUSH H ; stack has var addr + 1 (VL+1), EPL
 	
