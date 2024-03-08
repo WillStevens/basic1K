@@ -6,8 +6,12 @@
 ;
 ; 1. LineNumSub is >= address 223h
 ; 2. DivSub is at address 2xxh (i.e. <= 2ffh)
-; 3. Program does not exceed 1k
-; 4. In ClassLookup, check that QuoteClass
+; 3. DivJzError is at address 3xxh
+; 4. In LineStartsWithInt, the jump to
+;    DeleteProgramLine is on the same
+;    page as DeleteProgramLine
+; 5. Program does not exceed 1k
+; 6. In ClassLookup, check that QuoteClass
 ;    has LSB different from othet class subs
 ;
 ; 2023-03-03 About 450 bytes long
@@ -295,7 +299,8 @@
 ;     to check that this doesn't cause problems
 ; 2024-03-06 Changed IO to support Stefan Tramms
 ;     8080 emulator.
-
+; 2024-03-08 Branches code to make Altaid 8800
+;     version.
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
 ; 1K RAM from 1000h-13FFh
@@ -474,17 +479,16 @@ NegateDE:
 	MOV D,A
 	RET
 
-.macro RST_ExpEvaluate
-RST 7
-.endm
 ORG 38h
+  ; Leave space for JMP to ISR
+  db 0,0,0
+
+ExpEvaluate:
 
 ; BC points to program
 ; DE contains value
 ; Stack is used for both operands and
 ; operators
-
-ExpEvaluate:
 
 ; This puts a marker on the stack to
 ; detect when there are operators on the
@@ -728,7 +732,7 @@ ExpBracketedB:
 	DB LeftBraceToken&0ffh
 	CNZ Error
 
-	RST_ExpEvaluate
+	CALL ExpEvaluate
 	
 	RST_LDAXB_INXB_CPI
 	DB RightBraceToken&0ffh
@@ -883,7 +887,7 @@ ReverseDH:
   XTHL
   
 Reverse:
-; HL = last
+; HL = last (i.e 1 after the last byte to swap)
 ; DE = first
 
 ReverseLoop:
@@ -909,7 +913,7 @@ POPHAssignToVar_Prefix:
 	CALL GetLine
 
   POP B
-  RST_ExpEvaluate
+  CALL ExpEvaluate
   POP B
   
 	; fall through
@@ -1131,23 +1135,9 @@ LineNumSub:
 	
 PrintSub:
 	JMP PrintSubImpl
-
-LetSub:
-	CALL GetVarLocationBVar
-	PUSH H
 	
-	; Test that we have an equals sign
-	RST_LDAXB_INXB_CPI
-	
-	DB EqualSub&0ffh
-	CNZ Error
-	
-	RST_ExpEvaluate
-	
-	JMP POPHAssignToVar
-
 GosubSub:
-	RST_ExpEvaluate
+	CALL ExpEvaluate
 	POP H
 	
 	PUSH B
@@ -1155,7 +1145,7 @@ GosubSub:
 	
 	DB 03eh ; opcode for MVI A to eat next byte
 GotoSub:
-	RST_ExpEvaluate
+	CALL ExpEvaluate
 	CALL GetLineNum
 	RZ
 	CALL Error
@@ -1185,14 +1175,23 @@ InputSub:
 	JMP POPHAssignToVar_Prefix
 
 ForSub:
-	; First part is just like let statement
-	CALL LetSub
-	JMP ForSubImpl
-
-	; TODO - perhaps this saves 2 bytes?
-	;LXI H,ForSubImpl
-	;PUSH H
+	LXI H,ForSubImpl
+	PUSH H
 	; fall through to LetSub
+	; First part is just like let statement
+LetSub:
+	CALL GetVarLocationBVar
+	PUSH H
+	
+	; Test that we have an equals sign
+	RST_LDAXB_INXB_CPI
+	
+	DB EqualSub&0ffh
+	CNZ Error
+	
+	CALL ExpEvaluate
+	
+	JMP POPHAssignToVar
 	
 NextSub:
 	POP H ; discard return address
@@ -1244,7 +1243,7 @@ NextSubLoop:
 	RET
 	
 IfSub:
-	RST_ExpEvaluate
+	CALL ExpEvaluate
 	MOV A,D
 	ORA E
 	RNZ
@@ -1482,15 +1481,16 @@ DivideHL:
 	LXI B,0ffffh
 	
 ; Do the test for zero here because we want the
-; JZ to be on page 3
-; TODO - need to move this to earlier in DivSub
-; otherwise something other than the call address
-; is on the stack. (although actually maybe it is useful to have an address within the BASIC program)
+; CZ to be on page 3
+; This means that divide by zero and unterminated
+; string both have tbe same error code, but kt
+; will be obvious to the programmer which is
+; intended
 	MOV A,D
   ORA E
 DivJZError:
-  JZ Error
- 
+  CZ Error
+	
 DivLoop:
 	INX B
 	DAD D
@@ -1896,7 +1896,7 @@ ForSubImpl:
 	DB ToToken&0ffh
 	CNZ Error
 	
-	RST_ExpEvaluate
+	CALL ExpEvaluate
 	RST_NegateDE
 	
 	PUSH D ; stack contains -T,VL+1, EPL
@@ -1912,7 +1912,7 @@ ForSubImpl:
 ForWithStep:
 	; we have step token
 	INX B
-	RST_ExpEvaluate
+	CALL ExpEvaluate
 	
 	POP H
 	POP H
