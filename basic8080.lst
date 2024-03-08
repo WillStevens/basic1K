@@ -6,8 +6,12 @@
 0000                          ; 
 0000                          ; 1. LineNumSub is >= address 223h
 0000                          ; 2. DivSub is at address 2xxh (i.e. <= 2ffh)
-0000                          ; 3. Program does not exceed 1k
-0000                          ; 4. In ClassLookup, check that QuoteClass
+0000                          ; 3. DivJzError is at address 3xxh
+0000                          ; 4. In LineStartsWithInt, the jump to
+0000                          ;    DeleteProgramLine is on the same
+0000                          ;    page as DeleteProgramLine
+0000                          ; 5. Program does not exceed 1k
+0000                          ; 6. In ClassLookup, check that QuoteClass
 0000                          ;    has LSB different from othet class subs
 0000                          ; 
 0000                          ; 2023-03-03 About 450 bytes long
@@ -295,6 +299,8 @@
 0000                          ;     to check that this doesn't cause problems
 0000                          ; 2024-03-06 Changed IO to support Stefan Tramms
 0000                          ;     8080 emulator.
+0000                          ; 2024-03-08 Branches code to make Altaid 8800
+0000                          ;     version.
 0000                          ; For development purposes assume we have
 0000                          ; 1K ROM from 0000h-03FFh containing BASIC
 0000                          ; 1K RAM from 1000h-13FFh
@@ -349,7 +355,7 @@
 0000                          ; will be output that depends on the value of
 0000                          ; A at the time, but worth it to save several
 0000                          ; bytes)
-0000   31 8B 02               LXI   SP,ExecuteProgram+2   
+0000   31 91 02               LXI   SP,ExecuteProgram+2   
 0003   E1                     POP   H   
 0004   22 00 10               SHLD   PROG_PTR   
 0007   33                     INX   SP   
@@ -433,428 +439,421 @@
 0036   57                     MOV   D,A   
 0037   C9                     RET   
 0038                          .ORG   38h   
-0038                          ; BC points to program
-0038                          ; DE contains value
-0038                          ; Stack is used for both operands and
-0038                          ; operators
-0038                EXPEVALUATE:   
-0038                          ; This puts a marker on the stack to
-0038                          ; detect when there are operators on the
-0038                          ; stack - operators all have 2 as the hi byte
-0038                          ; but this call puts hi byte 0 on the stack
-0038   CD 3F 00               CALL   ExpEvaluateNum   
-003B   D4 D3 00               CNC   Error   
-003E   C9                     RET   
-003F                          ; ExpEvaluateNum must always be called
-003F                          ; from page 0
-003F                EXPEVALUATENUM:   
-003F                          ; Expecting ( var integer or - sign
-003F                          ; or function call
+0038                          ; Leave space for JMP to ISR
+0038   00 00 00               DB   0,0,0   
+003B                EXPEVALUATE:   
+003B                          ; BC points to program
+003B                          ; DE contains value
+003B                          ; Stack is used for both operands and
+003B                          ; operators
+003B                          ; This puts a marker on the stack to
+003B                          ; detect when there are operators on the
+003B                          ; stack - operators all have 2 as the hi byte
+003B                          ; but this call puts hi byte 0 on the stack
+003B   CD 42 00               CALL   ExpEvaluateNum   
+003E   D4 0A 04               CNC   Error   
+0041   C9                     RET   
+0042                          ; ExpEvaluateNum must always be called
+0042                          ; from page 0
+0042                EXPEVALUATENUM:   
+0042                          ; Expecting ( var integer or - sign
+0042                          ; or function call
         **MACRO UNROLL - RST_LDAXB_INXB_CPI
-003F   D7 RST   2   
-0040   AB                     DB   LeftBraceToken&0ffh   
+0042   D7 RST   2   
+0043   B1                     DB   LeftBraceToken&0ffh   
         **MACRO UNROLL - RST_JZPAGE
-0041   E7 RST   4   
-0042   C0                     DB   (ExpLeftBrace&0ffh)-1   
+0044   E7 RST   4   
+0045   C3                     DB   (ExpLeftBrace&0ffh)-1   
         **MACRO UNROLL - RST_COMPAREJUMP
-0043   DF RST   3   
-0044   DE 73                  DB   SubSub&0xff,(ExpNegate&0ffh)-1   
-0046                          ; 
-0046                          ; last function
-0046   FE AF                  CPI   (RndSub+1)&0ffh   
-0048   D0                     RNC   ; if its greater than this, its an error
-0049                          ; first function
-0049   FE A8                  CPI   AbsSub&0ffh   
-004B   D2 C2 00               JNC   FunctionCall   ; between RndSub and AbsSub
-004E                          ; 
-004E                          ; can't use RST_CompareJump below
-004E                          ; because it doesn't preserve Carry after
-004E                          ; comparison.
-004E                          ; TODO - this assumption isn't correct - INX H
-004E                          ; doesnt affect flags
-004E                          ; 
-004E   FE 20                  CPI   IntegerToken   
-0050   DA 58 00               JC   ExpVar   
-0053                          ; 
-0053                          ; Integer token is one more than last var
-0053                          ; token so if carry is set then it is a var
-0053                          ; 
-0053   C0                     RNZ   : return with carry clear if error   
-0054                          ; Fall through to ExpInteger
-0054                EXPINTEGER:   
-0054   60                     MOV   H,B   
-0055   69                     MOV   L,C   
-0056   03                     INX   B   
-0057   03                     INX   B   
-0058                          ; 
-0058                          ; fall through with carry clear
-0058                EXPVAR:   
-0058                          ; carry set if jumped to here
-0058                          ; 
-0058   DC AA 00               CC   GetVarLocation   
-005B                EXPVARGETVALUE:   
-005B   5E                     MOV   E,M   
-005C   23                     INX   H   
-005D   56                     MOV   D,M   
-005E                EXPEVALUATEOP:   
-005E                          ;Expecting operator or right bracket or
-005E                          ;end of expression
-005E                          ; 
-005E                          ;Are there operators on the stack?
-005E   E1                     POP   H   
-005F                          ; 
-005F                          ; H will be 0 if no operators on
-005F                          ; stack (i.e. high byte of return address)
-005F                          ; 
-005F   7C                     MOV   A,H   
+0046   DF RST   3   
+0047   E4 76                  DB   SubSub&0xff,(ExpNegate&0ffh)-1   
+0049                          ; 
+0049                          ; last function
+0049   FE B5                  CPI   (RndSub+1)&0ffh   
+004B   D0                     RNC   ; if its greater than this, its an error
+004C                          ; first function
+004C   FE AE                  CPI   AbsSub&0ffh   
+004E   D2 C5 00               JNC   FunctionCall   ; between RndSub and AbsSub
+0051                          ; 
+0051                          ; can't use RST_CompareJump below
+0051                          ; because it doesn't preserve Carry after
+0051                          ; comparison.
+0051                          ; TODO - this assumption isn't correct - INX H
+0051                          ; doesnt affect flags
+0051                          ; 
+0051   FE 20                  CPI   IntegerToken   
+0053   DA 5B 00               JC   ExpVar   
+0056                          ; 
+0056                          ; Integer token is one more than last var
+0056                          ; token so if carry is set then it is a var
+0056                          ; 
+0056   C0                     RNZ   : return with carry clear if error   
+0057                          ; Fall through to ExpInteger
+0057                EXPINTEGER:   
+0057   60                     MOV   H,B   
+0058   69                     MOV   L,C   
+0059   03                     INX   B   
+005A   03                     INX   B   
+005B                          ; 
+005B                          ; fall through with carry clear
+005B                EXPVAR:   
+005B                          ; carry set if jumped to here
+005B                          ; 
+005B   DC AD 00               CC   GetVarLocation   
+005E                EXPVARGETVALUE:   
+005E   5E                     MOV   E,M   
+005F   23                     INX   H   
+0060   56                     MOV   D,M   
+0061                EXPEVALUATEOP:   
+0061                          ;Expecting operator or right bracket or
+0061                          ;end of expression
+0061                          ; 
+0061                          ;Are there operators on the stack?
+0061   E1                     POP   H   
+0062                          ; 
+0062                          ; H will be 0 if no operators on
+0062                          ; stack (i.e. high byte of return address)
+0062                          ; 
+0062   7C                     MOV   A,H   
         **MACRO UNROLL - RST_COMPAREJUMP
-0060   DF RST   3   
-0061   00 6C                  DB   0,(SkipExpApplyOp&0ffh)-1   
-0063                          ; 
-0063                          ; if L is equal to MulSub then apply it.
-0063                          ; this gives * same precedence as /
-0063   7D                     MOV   A,L   
+0063   DF RST   3   
+0064   00 6F                  DB   0,(SkipExpApplyOp&0ffh)-1   
+0066                          ; 
+0066                          ; if L is equal to MulSub then apply it.
+0066                          ; this gives * same precedence as /
+0066   7D                     MOV   A,L   
         **MACRO UNROLL - RST_COMPAREJUMP
-0064   DF RST   3   
-0065   E2 25                  DB   (MulSub&0ffh),(ExpApplyOp&0ffh)-1   
-0067                          ; 
-0067   0A                     LDAX   B   
-0068                          ; 
-0068                          ; No longer needed since case below
-0068                          ; includes this
-0068                          ;CPI Operators&0ffh
-0068                          ; Is it the end of the expression?
-0068                          ;JC ExpApplyOp
-0068                          ; 
-0068                          ; Does operator on stack have GTE precedence?
-0068                          ; (or end of expression, when A < operators)
-0068   3D                     DCR   A   
-0069   BD                     CMP   L   
+0067   DF RST   3   
+0068   E8 25                  DB   (MulSub&0ffh),(ExpApplyOp&0ffh)-1   
 006A                          ; 
-006A   DA 26 00               JC   ExpApplyOp   ; apply the operator
-006D                          ; that was on the stack
+006A   0A                     LDAX   B   
+006B                          ; 
+006B                          ; No longer needed since case below
+006B                          ; includes this
+006B                          ;CPI Operators&0ffh
+006B                          ; Is it the end of the expression?
+006B                          ;JC ExpApplyOp
+006B                          ; 
+006B                          ; Does operator on stack have GTE precedence?
+006B                          ; (or end of expression, when A < operators)
+006B   3D                     DCR   A   
+006C   BD                     CMP   L   
 006D                          ; 
-006D                SKIPEXPAPPLYOP:   
-006D   E5                     PUSH   H   ; put operator that was on stack
-006E                          ; back onto stack
-006E                          ; 
-006E   0A                     LDAX   B   
-006F                          ; 
-006F   FE C5                  CPI   Operators&0ffh   
-0071                          ; Is it the end of the expression?
-0071   D8                     RC   
+006D   DA 26 00               JC   ExpApplyOp   ; apply the operator
+0070                          ; that was on the stack
+0070                          ; 
+0070                SKIPEXPAPPLYOP:   
+0070   E5                     PUSH   H   ; put operator that was on stack
+0071                          ; back onto stack
+0071                          ; 
+0071   0A                     LDAX   B   
 0072                          ; 
-0072   03                     INX   B   
-0073                          ; 
-0073                          ; Code shared with ExpNegate
-0073                          ; so use a CPI to mop up the initial
-0073                          ; LXI in ExpNegate
-0073                          ; 
-0073   FE                     DB   0feh   ; OpCode for CPI to mop up LXI
-0074                EXPNEGATE:   
-0074                          ; Put 0 onto stack and - onto
-0074                          ; operator stack
-0074   11 00 00               LXI   D,0   
-0077                          ; 
-0077   21 5E 00               LXI   H,ExpEvaluateOp   ; address to return to
-007A                          ; after operator is called
-007A   E5                     PUSH   H   
-007B                          ; 
-007B   D5                     PUSH   D   ; operand
-007C   6F                     MOV   L,A   ; operator address
-007D   26 02                  MVI   H,PrintSub/256   
-007F   E5                     PUSH   H   
-0080                          ; 
-0080   C3 3F 00               JMP   ExpEvaluateNum   
-0083                PRINTSUBSTRING:   
-0083   CD B9 00               CALL   OutputString   ; carry is clear on return
-0086                PRINTSUBINTEGER:   ; carry is set on jump to here
-0086   DC 8C 01               CC   PrintInteger   ; carry is clear on return
-0089                          ; 
-0089   11                     DB   11h   ; LXI D eats 2 bytes
-008A                PRINTSUBLOOP:   
-008A   37                     STC   
-008B   03                     INX   B   
-008C   D1                     POP   D   ; discard, since we are about to push again
-008D                          ; 
-008D                PRINTSUBIMPL:   
-008D                          ; First time called, carry is clear
-008D                          ; Subsequent times carry is clear unless
-008D                          ; last token was a comma
-008D   F5                     PUSH   PSW   
-008E                          ; 
-008E   0A                     LDAX   B   
-008F                          ; 
-        **MACRO UNROLL - RST_COMPAREJUMP
-008F   DF RST   3   
-0090   22 82                  DB   StringToken,(PrintSubString&0ffh)-1   
+0072   FE CB                  CPI   Operators&0ffh   
+0074                          ; Is it the end of the expression?
+0074   D8                     RC   
+0075                          ; 
+0075   03                     INX   B   
+0076                          ; 
+0076                          ; Code shared with ExpNegate
+0076                          ; so use a CPI to mop up the initial
+0076                          ; LXI in ExpNegate
+0076                          ; 
+0076   FE                     DB   0feh   ; OpCode for CPI to mop up LXI
+0077                EXPNEGATE:   
+0077                          ; Put 0 onto stack and - onto
+0077                          ; operator stack
+0077   11 00 00               LXI   D,0   
+007A                          ; 
+007A   21 61 00               LXI   H,ExpEvaluateOp   ; address to return to
+007D                          ; after operator is called
+007D   E5                     PUSH   H   
+007E                          ; 
+007E   D5                     PUSH   D   ; operand
+007F   6F                     MOV   L,A   ; operator address
+0080   26 02                  MVI   H,PrintSub/256   
+0082   E5                     PUSH   H   
+0083                          ; 
+0083   C3 42 00               JMP   ExpEvaluateNum   
+0086                PRINTSUBSTRING:   
+0086   CD BC 00               CALL   OutputString   ; carry is clear on return
+0089                PRINTSUBINTEGER:   ; carry is set on jump to here
+0089   DC 8C 01               CC   PrintInteger   ; carry is clear on return
+008C                          ; 
+008C   11                     DB   11h   ; LXI D eats 2 bytes
+008D                PRINTSUBLOOP:   
+008D   37                     STC   
+008E   03                     INX   B   
+008F   D1                     POP   D   ; discard, since we are about to push again
+0090                          ; 
+0090                PRINTSUBIMPL:   
+0090                          ; First time called, carry is clear
+0090                          ; Subsequent times carry is clear unless
+0090                          ; last token was a comma
+0090   F5                     PUSH   PSW   
+0091                          ; 
+0091   0A                     LDAX   B   
+0092                          ; 
         **MACRO UNROLL - RST_COMPAREJUMP
 0092   DF RST   3   
-0093   A6 89                  DB   CommaToken,(PrintSubLoop&0ffh)-1   
-0095                          ; must be called from page 0
-0095   CD 3F 00               CALL   ExpEvaluateNum   
-0098   DA 86 00               JC   PrintSubInteger   
-009B   0B                     DCX   B   
-009C                          ; 
-009C                          ; Finished, we want to print a newline unless
-009C                          ; last one was a comma
-009C   F1                     POP   PSW   
-009D   D8                     RC   ; return without newline if it was comma
-009E                CRLF:     
-009E   3E 0D                  MVI   A,13   
-        **MACRO UNROLL - RST_PUTCHAR
-00A0   CF RST   1   
-00A1   3E 0A                  MVI   A,10   
+0093   22 85                  DB   StringToken,(PrintSubString&0ffh)-1   
+        **MACRO UNROLL - RST_COMPAREJUMP
+0095   DF RST   3   
+0096   AC 8C                  DB   CommaToken,(PrintSubLoop&0ffh)-1   
+0098                          ; must be called from page 0
+0098   CD 42 00               CALL   ExpEvaluateNum   
+009B   DA 89 00               JC   PrintSubInteger   
+009E   0B                     DCX   B   
+009F                          ; 
+009F                          ; Finished, we want to print a newline unless
+009F                          ; last one was a comma
+009F   F1                     POP   PSW   
+00A0   D8                     RC   ; return without newline if it was comma
+00A1                CRLF:     
+00A1   3E 0D                  MVI   A,13   
         **MACRO UNROLL - RST_PUTCHAR
 00A3   CF RST   1   
-00A4   C9                     RET   
-00A5                GETVARLOCATIONBVAR:   
-        **MACRO UNROLL - RST_LDAXB_INXB_CPI
-00A5   D7 RST   2   
-00A6                          ; Test that we have a var
-00A6   20                     DB   32   
-00A7   D4 D3 00               CNC   Error   
-00AA                GETVARLOCATION:   
-00AA                          ; A should contain a var token
-00AA                          ; and B points to tbe location after
-00AA                          ; the var token
-00AA                          ; return with var address in HL
-00AA                          ; and B pointing to next char
-00AA                          ; A will never be 255 on return
-00AA   26 10                  MVI   H,VAR_SPACE/256   
-00AC   87                     ADD   A   
-00AD   6F                     MOV   L,A   
-00AE                          ; 
-00AE   C0                     RNZ   
-00AF                          ; 
-00AF                          ; fall through if it is array var
-00AF                          ; 
-00AF   CD CA 00               CALL   ExpBracketedB   
-00B2                          ; 
-00B2                          ; Now DE contains the array index
-00B2                          ; Add it twice to get the offset
-00B2                          ; 
-00B2   2A 3C 10               LHLD   PROG_PARSE_PTR   
-00B5   23                     INX   H   ; up 1 byte to avoid EndProgram marker
-00B6   19                     DAD   D   
-00B7   19                     DAD   D   
-00B8                OUTPUTSTRINGRET:   ; shared code, nearest RET
-00B8   C9                     RET   
-00B9                          ; This 9 byte routine can be moved anywhere to
-00B9                          ; fill holes
-00B9                OUTPUTSTRING:   
-00B9                          ;Pointer in B points to string token marker
-00B9   03                     INX   B   
-00BA                OUTPUTSTRINGLOOP:   
-        **MACRO UNROLL - RST_LDAXB_INXB_CPI
-00BA   D7 RST   2   
-00BB   22                     DB   StringToken   
-        **MACRO UNROLL - RST_JZPAGE
-00BC   E7 RST   4   
-00BD   B7                     DB   (OutputStringRet&0ffh)-1   
-00BE                OUTPUTSTRING_WITHQUOTE:   
+00A4   3E 0A                  MVI   A,10   
         **MACRO UNROLL - RST_PUTCHAR
-00BE   CF RST   1   
+00A6   CF RST   1   
+00A7   C9                     RET   
+00A8                GETVARLOCATIONBVAR:   
+        **MACRO UNROLL - RST_LDAXB_INXB_CPI
+00A8   D7 RST   2   
+00A9                          ; Test that we have a var
+00A9   20                     DB   32   
+00AA   D4 0A 04               CNC   Error   
+00AD                GETVARLOCATION:   
+00AD                          ; A should contain a var token
+00AD                          ; and B points to tbe location after
+00AD                          ; the var token
+00AD                          ; return with var address in HL
+00AD                          ; and B pointing to next char
+00AD                          ; A will never be 255 on return
+00AD   26 10                  MVI   H,VAR_SPACE/256   
+00AF   87                     ADD   A   
+00B0   6F                     MOV   L,A   
+00B1                          ; 
+00B1   C0                     RNZ   
+00B2                          ; 
+00B2                          ; fall through if it is array var
+00B2                          ; 
+00B2   CD CD 00               CALL   ExpBracketedB   
+00B5                          ; 
+00B5                          ; Now DE contains the array index
+00B5                          ; Add it twice to get the offset
+00B5                          ; 
+00B5   2A 3C 10               LHLD   PROG_PARSE_PTR   
+00B8   23                     INX   H   ; up 1 byte to avoid EndProgram marker
+00B9   19                     DAD   D   
+00BA   19                     DAD   D   
+00BB                OUTPUTSTRINGRET:   ; shared code, nearest RET
+00BB   C9                     RET   
+00BC                          ; This 9 byte routine can be moved anywhere to
+00BC                          ; fill holes
+00BC                OUTPUTSTRING:   
+00BC                          ;Pointer in B points to string token marker
+00BC   03                     INX   B   
+00BD                OUTPUTSTRINGLOOP:   
+        **MACRO UNROLL - RST_LDAXB_INXB_CPI
+00BD   D7 RST   2   
+00BE   22                     DB   StringToken   
         **MACRO UNROLL - RST_JZPAGE
 00BF   E7 RST   4   
-00C0   B9                     DB   (OutputStringLoop&0ffh)-1   
-00C1                EXPLEFTBRACE:   
-00C1   0B                     DCX   B   
-00C2                FUNCTIONCALL:   
-00C2                          ; push return address
-00C2   11 5E 00               LXI   D,ExpEvaluateOp   
-00C5   D5                     PUSH   D   
-00C6                          ; A contains the address to call on page 2
-00C6                          ; push function address
-00C6   6F                     MOV   L,A   
-00C7   26 02                  MVI   H,PrintSub/256   
-00C9   E5                     PUSH   H   
-00CA                          ; 
-00CA                          ; fall through
-00CA                          ; This must be before Error so that it
-00CA                          ; can fall through
-00CA                EXPBRACKETEDB:   
-        **MACRO UNROLL - RST_LDAXB_INXB_CPI
-00CA   D7 RST   2   
-00CB   AB                     DB   LeftBraceToken&0ffh   
-00CC   C4 D3 00               CNZ   Error   
-        **MACRO UNROLL - RST_EXPEVALUATE
-00CF   FF RST   7   
-00D0                          ; 
-        **MACRO UNROLL - RST_LDAXB_INXB_CPI
-00D0   D7 RST   2   
-00D1   A5                     DB   RightBraceToken&0ffh   
-00D2   C8                     RZ   
-00D3                          ; 
-00D3                          ; fall through
-00D3                          ;Display error code and go back to line entry
-00D3                ERROR:    
-00D3   CD 9E 00               CALL   CRLF   
-00D6   3E 45                  MVI   A,'E'   
+00C0   BA                     DB   (OutputStringRet&0ffh)-1   
+00C1                OUTPUTSTRING_WITHQUOTE:   
         **MACRO UNROLL - RST_PUTCHAR
-00D8   CF RST   1   
-00D9   D1                     POP   D   
-00DA   CD 8C 01               CALL   PrintInteger   
-00DD                          ; 
-00DD                          ; fall through
-00DD                          ; 
-00DD                READY:    
-00DD                          ; Set stack pointer
-00DD                          ; Do this every time to guard against
-00DD                          ; GOSUB with no RETURN errors
-00DD                          ; 
-00DD   31 F8 13               LXI   SP,STACK_INIT   
-00E0                          ; 
-00E0   CD 9E 00               CALL   CRLF   
-00E3                          ; 
-00E3   2A 00 10               LHLD   PROG_PTR   
-00E6   E5                     PUSH   H   ; push it because we need it after
-00E7                          ; GetLine
-00E7   CD 22 03               CALL   GetLine   
-00EA                          ; 
-00EA   36 8A                  MVI   M,EndProgram&0ffh   
-00EC                          ; 
-00EC   22 3C 10               SHLD   PROG_PARSE_PTR   
-00EF   E1                     POP   H   
-00F0                          ; 
-00F0   E5                     PUSH   H   
-00F1   C1                     POP   B   
-00F2                          ; 
-00F2   7E                     MOV   A,M   
-00F3                          ; Regardless of which branch taken
-00F3                          ; we need this marker here.
-00F3                          ; This overwrites the token to execute,
-00F3                          ; but we've already got that in A
-00F3   36 8A                  MVI   M,EndProgram&0ffh   
-00F5                          ; 
-00F5   FE 20                  CPI   IntegerToken   
-00F7   C2 91 02               JNZ   ExecuteDirect   
-00FA                          ; 
-00FA                LINESTARTSWITHINT:   
-00FA                          ; Get the line number into DE
-00FA   23                     INX   H   
-00FB   5E                     MOV   E,M   
-00FC   23                     INX   H   
-00FD   56                     MOV   D,M   
-00FE   23                     INX   H   
-00FF                          ; 
-00FF                          ; Is it an integer all by itself?
-00FF                          ; If so then delete the line
-00FF                          ; 
-00FF                          ; call GetLineNum to find either the line, or
-00FF                          ; pointer to next location in program after it
-00FF                          ; 
-00FF   66                     MOV   H,M   ; preserve M (GetLineNum doesn't touch H)
-0100   CD B5 03               CALL   GetLineNum   
-0103   7C                     MOV   A,H   
-0104   2A 00 10               LHLD   PROG_PTR   
-0107   F5                     PUSH   PSW   
-0108                          ; 
-        **MACRO UNROLL - RST_COMPAREJUMP
-0108   DF RST   3   
-0109   8A                     DB   EndProgram&0ffh   
-010A   1A                     DB   (DeleteProgramLine&0ffh)-1   
-010B                          ; 
-010B   F1                     POP   PSW   
-010C                          ; if GetLineNum returns a match then this is
-010C                          ; an error, user must delete line first
-010C   CC D3 00               CZ   Error   
-010F                          ; 
-010F                          ; do a memory rotate with
-010F                          ; first = GetLine/ATNLN address
-010F                          ; middle = PROG_PTR
-010F                          ; last = PROG_PARSE_PTR
-010F                          ; 
-010F   36 27                  MVI   M,LineNumSub&0ffh   ; undo what we did earlier
-0111   EB                     XCHG   
-0112   2A 3C 10               LHLD   PROG_PARSE_PTR   
-0115                          ; 
-0115   E5                     PUSH   H   ; last
-0116   C5                     PUSH   B   ; first
-0117                          ; 
-0117   D5                     PUSH   D   ; middle
-0118                          ; 
-0118   AF                     XRA   A   
-0119                          ; 
+00C1   CF RST   1   
         **MACRO UNROLL - RST_JZPAGE
-0119   E7 RST   4   
-011A   2A                     DB   (Entry&0ffh)-1   
-011B                DELETEPROGRAMLINE:   
-011B                          ; 25 bytes
-011B   F1                     POP   PSW   
-011C                          ; 
-011C   C2 DD 00               JNZ   Ready   ; if line not found, do nothing
-011F   E5                     PUSH   H   
-0120   C5                     PUSH   B   ; first
-0121   E5                     PUSH   H   ; last
-0122                          ; 
-0122   09                     DAD   B   ; HL=PROG_PTR+first
-0123                          ; 
-0123   03                     INX   B   
-0124   CD D0 03               CALL   ATNLN_Int   ; Z is set when this is called
-0127                          ; 
-0127                          ;set HL to what we want PROG_PTR to be
-0127   50                     MOV   D,B   
-0128   59                     MOV   E,C   
+00C2   E7 RST   4   
+00C3   BC                     DB   (OutputStringLoop&0ffh)-1   
+00C4                EXPLEFTBRACE:   
+00C4   0B                     DCX   B   
+00C5                FUNCTIONCALL:   
+00C5                          ; push return address
+00C5   11 61 00               LXI   D,ExpEvaluateOp   
+00C8   D5                     PUSH   D   
+00C9                          ; A contains the address to call on page 2
+00C9                          ; push function address
+00C9   6F                     MOV   L,A   
+00CA   26 02                  MVI   H,PrintSub/256   
+00CC   E5                     PUSH   H   
+00CD                          ; 
+00CD                          ; fall through
+00CD                          ; This must be before Error so that it
+00CD                          ; can fall through
+00CD                EXPBRACKETEDB:   
+        **MACRO UNROLL - RST_LDAXB_INXB_CPI
+00CD   D7 RST   2   
+00CE   B1                     DB   LeftBraceToken&0ffh   
+00CF   C4 0A 04               CNZ   Error   
+00D2   CD 3B 00               CALL   ExpEvaluate   
+00D5                          ; 
+        **MACRO UNROLL - RST_LDAXB_INXB_CPI
+00D5   D7 RST   2   
+00D6   AB                     DB   RightBraceToken&0ffh   
+00D7   C8                     RZ   
+00D8                          ; 
+00D8                          ; fall through
+00D8                          ;Display error code and go back to line entry
+00D8   C3 0A 04               JMP   Error   
+00DB                          ; fall through
+00DB                          ; 
+00DB                READY:    
+00DB                          ; Set stack pointer
+00DB                          ; Do this every time to guard against
+00DB                          ; GOSUB with no RETURN errors
+00DB                          ; 
+00DB   31 F8 13               LXI   SP,STACK_INIT   
+00DE                          ; 
+00DE   CD A1 00               CALL   CRLF   
+00E1                          ; 
+00E1   2A 00 10               LHLD   PROG_PTR   
+00E4   E5                     PUSH   H   ; push it because we need it after
+00E5                          ; GetLine
+00E5   CD 28 03               CALL   GetLine   
+00E8                          ; 
+00E8   36 90                  MVI   M,EndProgram&0ffh   
+00EA                          ; 
+00EA   22 3C 10               SHLD   PROG_PARSE_PTR   
+00ED   E1                     POP   H   
+00EE                          ; 
+00EE   E5                     PUSH   H   
+00EF   C1                     POP   B   
+00F0                          ; 
+00F0   7E                     MOV   A,M   
+00F1                          ; Regardless of which branch taken
+00F1                          ; we need this marker here.
+00F1                          ; This overwrites the token to execute,
+00F1                          ; but we've already got that in A
+00F1   36 90                  MVI   M,EndProgram&0ffh   
+00F3                          ; 
+00F3   FE 20                  CPI   IntegerToken   
+00F5   C2 97 02               JNZ   ExecuteDirect   
+00F8                          ; 
+00F8                LINESTARTSWITHINT:   
+00F8                          ; Get the line number into DE
+00F8   23                     INX   H   
+00F9   5E                     MOV   E,M   
+00FA   23                     INX   H   
+00FB   56                     MOV   D,M   
+00FC   23                     INX   H   
+00FD                          ; 
+00FD                          ; Is it an integer all by itself?
+00FD                          ; If so then delete the line
+00FD                          ; 
+00FD                          ; call GetLineNum to find either the line, or
+00FD                          ; pointer to next location in program after it
+00FD                          ; 
+00FD   66                     MOV   H,M   ; preserve M (GetLineNum doesn't touch H)
+00FE   CD BB 03               CALL   GetLineNum   
+0101   7C                     MOV   A,H   
+0102   2A 00 10               LHLD   PROG_PTR   
+0105   F5                     PUSH   PSW   
+0106                          ; 
+        **MACRO UNROLL - RST_COMPAREJUMP
+0106   DF RST   3   
+0107   90                     DB   EndProgram&0ffh   
+0108   18                     DB   (DeleteProgramLine&0ffh)-1   
+0109                          ; 
+0109   F1                     POP   PSW   
+010A                          ; if GetLineNum returns a match then this is
+010A                          ; an error, user must delete line first
+010A   CC 0A 04               CZ   Error   
+010D                          ; 
+010D                          ; do a memory rotate with
+010D                          ; first = GetLine/ATNLN address
+010D                          ; middle = PROG_PTR
+010D                          ; last = PROG_PARSE_PTR
+010D                          ; 
+010D   36 27                  MVI   M,LineNumSub&0ffh   ; undo what we did earlier
+010F   EB                     XCHG   
+0110   2A 3C 10               LHLD   PROG_PARSE_PTR   
+0113                          ; 
+0113   E5                     PUSH   H   ; last
+0114   C5                     PUSH   B   ; first
+0115                          ; 
+0115   D5                     PUSH   D   ; middle
+0116                          ; 
+0116   AF                     XRA   A   
+0117                          ; 
+        **MACRO UNROLL - RST_JZPAGE
+0117   E7 RST   4   
+0118   28                     DB   (Entry&0ffh)-1   
+0119                DELETEPROGRAMLINE:   
+0119                          ; 25 bytes
+0119   F1                     POP   PSW   
+011A                          ; 
+011A   C2 DB 00               JNZ   Ready   ; if line not found, do nothing
+011D   E5                     PUSH   H   
+011E   C5                     PUSH   B   ; first
+011F   E5                     PUSH   H   ; last
+0120                          ; 
+0120   09                     DAD   B   ; HL=PROG_PTR+first
+0121                          ; 
+0121   03                     INX   B   
+0122   CD D6 03               CALL   ATNLN_Int   ; Z is set when this is called
+0125                          ; 
+0125                          ;set HL to what we want PROG_PTR to be
+0125   50                     MOV   D,B   
+0126   59                     MOV   E,C   
         **MACRO UNROLL - RST_NEGATEDE
-0129   F7 RST   6   
-012A                          ; 
-012A   19                     DAD   D   ; HL=PROG_PTR+first-middle
-012B                          ; 
-012B                          ; because DAD D above always causes HL
-012B                          ; to decrease, it must set carry
-012B                          ; so STC below is not needed
-012B                          ;STC ; skip first reverse in memory rotate
-012B                          ; because we don't care about the
-012B                          ; line being deleted
-012B                          ; 
-012B                ENTRY:    
-012B                          ; carry is clear if coming from insert
-012B                          ; 
-012B   C5                     PUSH   B   ; middle (or first)
-012C   22 00 10               SHLD   PROG_PTR   
-012F                          ; 
-012F                MEMORYROTATE:   
-012F                          ; 27 bytes
-012F                          ; stack must contain (from top down)
-012F                          ; first, middle, first, last
-012F                          ; DE = middle
-012F                          ; HL = Last
-012F   D4 3C 01               CNC   Reverse   
-0132   CD 39 01               CALL   ReverseDH   
-0135   01 DD 00               LXI   B,Ready   
-0138   C5                     PUSH   B   
-0139                REVERSEDH:   
-0139   E1                     POP   H   
-013A   D1                     POP   D   
-013B   E3                     XTHL   
-013C                REVERSE:   
-013C                          ; HL = last
-013C                          ; DE = first
-013C                REVERSELOOP:   
+0127   F7 RST   6   
+0128                          ; 
+0128   19                     DAD   D   ; HL=PROG_PTR+first-middle
+0129                          ; 
+0129                          ; because DAD D above always causes HL
+0129                          ; to decrease, it must set carry
+0129                          ; so STC below is not needed
+0129                          ;STC ; skip first reverse in memory rotate
+0129                          ; because we don't care about the
+0129                          ; line being deleted
+0129                          ; 
+0129                ENTRY:    
+0129                          ; carry is clear if coming from insert
+0129                          ; 
+0129   C5                     PUSH   B   ; middle (or first)
+012A   22 00 10               SHLD   PROG_PTR   
+012D                          ; 
+012D                MEMORYROTATE:   
+012D                          ; 27 bytes
+012D                          ; stack must contain (from top down)
+012D                          ; first, middle, first, last
+012D                          ; DE = middle
+012D                          ; HL = Last
+012D   D4 3A 01               CNC   Reverse   
+0130   CD 37 01               CALL   ReverseDH   
+0133   01 DB 00               LXI   B,Ready   
+0136   C5                     PUSH   B   
+0137                REVERSEDH:   
+0137   E1                     POP   H   
+0138   D1                     POP   D   
+0139   E3                     XTHL   
+013A                REVERSE:   
+013A                          ; HL = last (i.e 1 after the last byte to swap)
+013A                          ; DE = first
+013A                REVERSELOOP:   
         **MACRO UNROLL - RST_COMPAREHLDE
-013C   EF RST   5   
-013D   C8                     RZ   
-013E   2B                     DCX   H   
+013A   EF RST   5   
+013B   C8                     RZ   
+013C   2B                     DCX   H   
         **MACRO UNROLL - RST_COMPAREHLDE
-013F   EF RST   5   
-0140   C8                     RZ   
-0141                          ; 
-0141   46                     MOV   B,M   
-0142   1A                     LDAX   D   
-0143   77                     MOV   M,A   
-0144   78                     MOV   A,B   
-0145   12                     STAX   D   
-0146   13                     INX   D   
-0147                          ; 
-0147   C3 3C 01               JMP   ReverseLoop   
-014A                POPHASSIGNTOVAR_PREFIX:   
-014A   E5                     PUSH   H   
-014B                          ; 
-014B   CD 22 03               CALL   GetLine   
-014E   C1                     POP   B   
-        **MACRO UNROLL - RST_EXPEVALUATE
-014F   FF RST   7   
+013D   EF RST   5   
+013E   C8                     RZ   
+013F                          ; 
+013F   46                     MOV   B,M   
+0140   1A                     LDAX   D   
+0141   77                     MOV   M,A   
+0142   78                     MOV   A,B   
+0143   12                     STAX   D   
+0144   13                     INX   D   
+0145                          ; 
+0145   C3 3A 01               JMP   ReverseLoop   
+0148                POPHASSIGNTOVAR_PREFIX:   
+0148   E5                     PUSH   H   
+0149                          ; 
+0149   CD 28 03               CALL   GetLine   
+014C   C1                     POP   B   
+014D   CD 3B 00               CALL   ExpEvaluate   
 0150   C1                     POP   B   
 0151                          ; fall through
 0151                POPHASSIGNTOVAR:   
@@ -874,7 +873,7 @@
 0159                          ; 
         **MACRO UNROLL - RST_LDAXB_INXB_CPI
 0159   D7 RST   2   
-015A   8A                     DB   EndProgram&0ffh   
+015A   90                     DB   EndProgram&0ffh   
 015B   C8                     RZ   
 015C                          ; 
 015C   21 56 01               LXI   H,ListLoop   ; so that we can loop using RET
@@ -918,7 +917,7 @@
 0182   C9                     RET   
 0183                          ; 
 0183                LIST_LINENUM:   
-0183   CD 9E 00               CALL   CRLF   
+0183   CD A1 00               CALL   CRLF   
 0186                LIST_INTEGER:   
 0186   0A                     LDAX   B   
 0187   03                     INX   B   
@@ -951,7 +950,7 @@
 0197   EB                     XCHG   
 0198   11 0A 00               LXI   D,10   
 019B                          ; 
-019B   CD F6 02               CALL   DivideHL   
+019B   CD FC 02               CALL   DivideHL   
 019E                          ; HL contains remainder after / 10
 019E                          ; DE contains the quotient
 019E   3E 30                  MVI   A,'0'   
@@ -972,7 +971,7 @@
 01AA   E7 RST   4   
 01AB   A6                     DB   (PrintIntegerLoop2&0ffh)-1   
 01AC                LIST_STRING:   
-01AC   CD BE 00               CALL   OutputString_WithQuote   
+01AC   CD C1 00               CALL   OutputString_WithQuote   
 01AF   11                     DB   011h   ; LXI D skips 2 bytes
 01B0                LIST_VAR:   
 01B0   C6 40                  ADI   '@'   
@@ -993,73 +992,73 @@
 01B5   BF                     DB   '?'+128   
 01B6   2A                     DB   PrintSub&0ffh   
 01B7   50 52 49 4E D4         DB   "PRIN",'T'+128   
-01BC   2D                     DB   LetSub&0ffh   
+01BC   57                     DB   LetSub&0ffh   
 01BD   4C 45 D4               DB   "LE",'T'+128   
-01C0   3F                     DB   GotoSub&0ffh   
+01C0   34                     DB   GotoSub&0ffh   
 01C1   47 4F 54 CF            DB   "GOT",'O'+128   
-01C5   3A                     DB   GosubSub&0ffh   
+01C5   2D                     DB   GosubSub&0ffh   
 01C6   47 4F 53 55 C2         DB   "GOSU",'B'+128   
-01CB   47                     DB   ReturnSub&0ffh   
+01CB   3E                     DB   ReturnSub&0ffh   
 01CC   52 45 54 55 52 CE      DB   "RETUR",'N'+128   
-01D2   51                     DB   InputSub&0ffh   
+01D2   48                     DB   InputSub&0ffh   
 01D3   49 4E 50 55 D4         DB   "INPU",'T'+128   
-01D8   5C                     DB   ForSub&0ffh   
+01D8   53                     DB   ForSub&0ffh   
 01D9   46 4F D2               DB   "FO",'R'+128   
-01DC   62                     DB   NextSub&0ffh   
+01DC   66                     DB   NextSub&0ffh   
 01DD   4E 45 58 D4            DB   "NEX",'T'+128   
-01E1   82                     DB   IfSub&0ffh   
+01E1   86                     DB   IfSub&0ffh   
 01E2   49 C6                  DB   "I",'F'+128   
-01E4   8D                     DB   EndSub&0ffh   
+01E4   93                     DB   EndSub&0ffh   
 01E5   45 4E C4               DB   "EN",'D'+128   
 01E8                          ; 
 01E8                          ; Before this are keywords allowed at run-time
-01E8   89                     DB   ExecuteProgram&0ffh   
+01E8   8F                     DB   ExecuteProgram&0ffh   
 01E9   52 55 CE               DB   "RU",'N'+128   
-01EC   A2                     DB   ListSub&0ffh   
+01EC   A8                     DB   ListSub&0ffh   
 01ED   4C 49 53 D4            DB   "LIS",'T'+128   
-01F1   A1                     DB   NewSub&0ffh   
+01F1   A7                     DB   NewSub&0ffh   
 01F2   4E 45 D7               DB   "NE",'W'+128   
 01F5                          ; 
 01F5                          ; 
 01F5                          ; 
 01F5                          ; before operators are non-statement
 01F5                          ; non-operator tokens
-01F5   A8                     DB   AbsSub&0ffh   
+01F5   AE                     DB   AbsSub&0ffh   
 01F6   41 42 D3               DB   "AB",'S'+128   
-01F9   AC                     DB   UsrSub&0ffh   
+01F9   B2                     DB   UsrSub&0ffh   
 01FA   55 53 D2               DB   "US",'R'+128   
-01FD   AE                     DB   RndSub&0ffh   
+01FD   B4                     DB   RndSub&0ffh   
 01FE   52 4E C4               DB   "RN",'D'+128   
 0201                          ; 
-0201   A3                     DB   ToToken&0ffh   
+0201   A9                     DB   ToToken&0ffh   
 0202   54 CF                  DB   "T",'O'+128   
-0204   A4                     DB   StepToken&0ffh   
+0204   AA                     DB   StepToken&0ffh   
 0205   53 54 45 D0            DB   "STE",'P'+128   
-0209   A6                     DB   CommaToken   
+0209   AC                     DB   CommaToken   
 020A   AC                     DB   ","+128   
-020B   AB                     DB   LeftBraceToken&0ffh   
+020B   B1                     DB   LeftBraceToken&0ffh   
 020C   A8                     DB   '('+128   
-020D   A5                     DB   RightBraceToken&0ffh   
+020D   AB                     DB   RightBraceToken&0ffh   
 020E   A9                     DB   ')'+128   
-020F   D3                     DB   EqualSub&0ffh   
+020F   D9                     DB   EqualSub&0ffh   
 0210   BD                     DB   '='+128   
-0211   D6                     DB   NotEqualSub&0ffh   
+0211   DC                     DB   NotEqualSub&0ffh   
 0212   3C BE                  DB   "<",'>'+128   
-0214   C6                     DB   GTESub&0ffh   
+0214   CC                     DB   GTESub&0ffh   
 0215   3E BD                  DB   ">",'='+128   
-0217   C5                     DB   LTESub&0ffh   
+0217   CB                     DB   LTESub&0ffh   
 0218   3C BD                  DB   "<",'='+128   
-021A   CA                     DB   LTSub&0ffh   
+021A   D0                     DB   LTSub&0ffh   
 021B   BC                     DB   '<'+128   
-021C   C9                     DB   GTSub&0ffh   
+021C   CF                     DB   GTSub&0ffh   
 021D   BE                     DB   '>'+128   
-021E   DD                     DB   AddSub&0ffh   
+021E   E3                     DB   AddSub&0ffh   
 021F   AB                     DB   '+'+128   
-0220   DE                     DB   SubSub&0ffh   
+0220   E4                     DB   SubSub&0ffh   
 0221   AD                     DB   '-'+128   
-0222   E2                     DB   MulSub&0ffh   
+0222   E8                     DB   MulSub&0ffh   
 0223   AA                     DB   '*'+128   
-0224   F6                     DB   DivSub&0ffh   
+0224   FC                     DB   DivSub&0ffh   
 0225   AF                     DB   '/'+128   
 0226   FF                     DB   255   ; 255 can only occur at the end
 0227                          ; 
@@ -1069,1130 +1068,1145 @@
 0229   C9                     RET   
 022A                          ; 
 022A                PRINTSUB:   
-022A   C3 8D 00               JMP   PrintSubImpl   
-022D                LETSUB:   
-022D   CD A5 00               CALL   GetVarLocationBVar   
-0230   E5                     PUSH   H   
+022A   C3 90 00               JMP   PrintSubImpl   
+022D                          ; 
+022D                GOSUBSUB:   
+022D   CD 3B 00               CALL   ExpEvaluate   
+0230   E1                     POP   H   
 0231                          ; 
-0231                          ; Test that we have an equals sign
-        **MACRO UNROLL - RST_LDAXB_INXB_CPI
-0231   D7 RST   2   
-0232                          ; 
-0232   D3                     DB   EqualSub&0ffh   
-0233   C4 D3 00               CNZ   Error   
-0236                          ; 
-        **MACRO UNROLL - RST_EXPEVALUATE
-0236   FF RST   7   
-0237                          ; 
-0237   C3 51 01               JMP   POPHAssignToVar   
-023A                GOSUBSUB:   
-        **MACRO UNROLL - RST_EXPEVALUATE
-023A   FF RST   7   
-023B   E1                     POP   H   
-023C                          ; 
-023C   C5                     PUSH   B   
-023D   E5                     PUSH   H   
+0231   C5                     PUSH   B   
+0232   E5                     PUSH   H   
+0233                          ; 
+0233   11                     DB   011h   ; opcode for LXI H to eat 2 bytes
+0234                          ; because ExpEcaluate is on page
+0234                          ; 0, third byte is NOP
+0234                GOTOSUB:   
+0234   CD 3B 00               CALL   ExpEvaluate   
+0237   CD BB 03               CALL   GetLineNum   
+023A   C8                     RZ   
+023B   CD 0A 04               CALL   Error   
+023E                          ; TODO in place of call error, is there
+023E                          ; a two or three byte inst that will
+023E                          ; cause C to be set when DAD SP is called below?
 023E                          ; 
-023E   3E                     DB   03eh   ; opcode for MVI A to eat next byte
-023F                GOTOSUB:   
-        **MACRO UNROLL - RST_EXPEVALUATE
-023F   FF RST   7   
-0240   CD B5 03               CALL   GetLineNum   
-0243   C8                     RZ   
-0244   CD D3 00               CALL   Error   
-0247                          ; TODO in place of call error, is there
-0247                          ; a two or three byte inst that will
-0247                          ; cause C to be set when DAD SP is called below?
-0247                          ; 
-0247                RETURNSUB:   
-0247                          ; Expect stack size to be 6 or more
-0247                          ; any less and we have return without gosub
-0247   21 0D EC               LXI   H,-(STACK_INIT-6)-1   
-024A   39                     DAD   SP   
-024B   DC D3 00               CC   Error   
-024E                          ; 
-024E   E1                     POP   H   ; Get return address first
-024F   C1                     POP   B   ; Get pointer to program loc to return to
-0250   E9                     PCHL   ; instead of RET
-0251                INPUTSUB:   
-0251   CD A5 00               CALL   GetVarLocationBVar   
-0254   E5                     PUSH   H   
-0255   21 F8 13               LXI   H,INPUT_BUFFER   
-0258   C5                     PUSH   B   
-0259                          ; 
-0259   C3 4A 01               JMP   POPHAssignToVar_Prefix   
-025C                FORSUB:   
-025C                          ; First part is just like let statement
-025C   CD 2D 02               CALL   LetSub   
-025F   C3 E3 03               JMP   ForSubImpl   
-0262                          ; TODO - perhaps this saves 2 bytes?
-0262                          ;LXI H,ForSubImpl
-0262                          ;PUSH H
-0262                          ; fall through to LetSub
-0262                          ; 
-0262                NEXTSUB:   
-0262   E1                     POP   H   ; discard return address
-0263                          ; stack contains VL+1,S,-T,LS,EPL
-0263   E1                     POP   H   ; get VL+1
-0264   56                     MOV   D,M   
-0265   2B                     DCX   H   
-0266   5E                     MOV   E,M   
-0267                          ; 
-0267   E3                     XTHL   ; step is in HL, VL is in (SP)
-0268   EB                     XCHG   ; step is in DE, var value in HL
-0269   19                     DAD   D   ; add step onto var
-026A   EB                     XCHG   ; result is in DE, step is in HL
-026B   E3                     XTHL   ; step is in (SP), VL is in HL
-026C                          ; 
-026C   73                     MOV   M,E   ; put back into VL
-026D   23                     INX   H   ; H = VL+1
-026E   72                     MOV   M,D   
-026F                          ; 
-026F   F1                     POP   PSW   ; get step so that hi bit of A has
-0270                          ; sign of step
-0270   E1                     POP   H   ; get -T
-0271                          ; 
-0271   19                     DAD   D   ; HL now has LV-T
-0272                          ; 
-0272   AC                     XRA   H   ; xor sign of step with
-0273                          ; sign of result
+023E                RETURNSUB:   
+023E                          ; Expect stack size to be 6 or more
+023E                          ; any less and we have return without gosub
+023E   21 0D EC               LXI   H,-(STACK_INIT-6)-1   
+0241   39                     DAD   SP   
+0242   DC 0A 04               CC   Error   
+0245                          ; 
+0245   E1                     POP   H   ; Get return address first
+0246   C1                     POP   B   ; Get pointer to program loc to return to
+0247   E9                     PCHL   ; instead of RET
+0248                INPUTSUB:   
+0248   CD A8 00               CALL   GetVarLocationBVar   
+024B   E5                     PUSH   H   
+024C   21 F8 13               LXI   H,INPUT_BUFFER   
+024F   C5                     PUSH   B   
+0250                          ; 
+0250   C3 48 01               JMP   POPHAssignToVar_Prefix   
+0253                FORSUB:   
+0253   21 E9 03               LXI   H,ForSubImpl   
+0256   E5                     PUSH   H   
+0257                          ; fall through to LetSub
+0257                          ; First part is just like let statement
+0257                LETSUB:   
+0257   CD A8 00               CALL   GetVarLocationBVar   
+025A   E5                     PUSH   H   
+025B                          ; 
+025B                          ; Test that we have an equals sign
+        **MACRO UNROLL - RST_LDAXB_INXB_CPI
+025B   D7 RST   2   
+025C                          ; 
+025C   D9                     DB   EqualSub&0ffh   
+025D   C4 0A 04               CNZ   Error   
+0260                          ; 
+0260   CD 3B 00               CALL   ExpEvaluate   
+0263                          ; 
+0263   C3 51 01               JMP   POPHAssignToVar   
+0266                          ; 
+0266                NEXTSUB:   
+0266   E1                     POP   H   ; discard return address
+0267                          ; stack contains VL+1,S,-T,LS,EPL
+0267   E1                     POP   H   ; get VL+1
+0268   56                     MOV   D,M   
+0269   2B                     DCX   H   
+026A   5E                     MOV   E,M   
+026B                          ; 
+026B   E3                     XTHL   ; step is in HL, VL is in (SP)
+026C   EB                     XCHG   ; step is in DE, var value in HL
+026D   19                     DAD   D   ; add step onto var
+026E   EB                     XCHG   ; result is in DE, step is in HL
+026F   E3                     XTHL   ; step is in (SP), VL is in HL
+0270                          ; 
+0270   73                     MOV   M,E   ; put back into VL
+0271   23                     INX   H   ; H = VL+1
+0272   72                     MOV   M,D   
 0273                          ; 
-0273                          ; if result of xor above is 1
-0273                          ; then keep looping, or if HL
-0273                          ; is zero then keep looping
-0273                          ; 
-0273   D1                     POP   D   ; this is LoopStart
-0274                          ; 
-0274   FA 7A 02               JM   NextSubLoop   
+0273   F1                     POP   PSW   ; get step so that hi bit of A has
+0274                          ; sign of step
+0274   E1                     POP   H   ; get -T
+0275                          ; 
+0275   19                     DAD   D   ; HL now has LV-T
+0276                          ; 
+0276   AC                     XRA   H   ; xor sign of step with
+0277                          ; sign of result
 0277                          ; 
-0277   7C                     MOV   A,H   
-0278   B5                     ORA   L   
-0279   C0                     RNZ   
-027A                          ; 
-027A                NEXTSUBLOOP:   
-027A                          ; 
-027A   42                     MOV   B,D   
-027B   4B                     MOV   C,E   
-027C   21 F6 FF               LXI   H,-10   
-027F   39                     DAD   SP   
-0280   F9                     SPHL   
-0281                          ; 
-0281   C9                     RET   
-0282                          ; 
-0282                IFSUB:    
-        **MACRO UNROLL - RST_EXPEVALUATE
-0282   FF RST   7   
-0283   7A                     MOV   A,D   
-0284   B3                     ORA   E   
-0285   C0                     RNZ   
-0286                          ; If DE zero then fall through to next line
-0286   C3 D2 03               JMP   AdvanceToNextLineNum   
-0289                EXECUTEPROGRAM:   
-0289   37                     STC   ; skip over JNC Ready in a minute
-028A                          ; 
-028A                ENDPROGRAM:   ; executes the JNC Ready
-028A                          ; don't care what happens to BC
-028A                          ; if we are jumping to Ready
-028A                          ; 
-028A                          ; Point BC to first line
-028A                          ; Don't skip over the line number
-028A                          ; because we need the constant PROG_BASE
-028A                          ; at this location in memory
-028A   01 40 10               LXI   B,PROG_BASE   
-028D                ENDSUB:   
-028D   D2 DD 00               JNC   Ready   
-0290                EXECUTEPROGRAMLOOP:   
-0290   0A                     LDAX   B   
-0291                          ; 
-0291                EXECUTEDIRECT:   
-0291                          ; 
-0291   D6 27                  SUI   LineNumSub&0ffh   
-0293                          ; 
-0293                          ; Check that it is a token between
-0293                          ; LinenumSub and ListSub
-0293   FE 7C                  CPI   (ListSub-LineNumSub+1)&0ffh   
-0295   D4 D3 00               CNC   Error   
-0298                          ; 
-0298   03                     INX   B   
-0299   C6 27                  ADI   LineNumSub&0ffh   
-029B                          ; 
-029B                          ; Carry is clear now
-029B                          ; 
-029B                          ; Put return address onto stack
-029B   21 90 02               LXI   H,ExecuteProgramLoop   
-029E   E5                     PUSH   H   
-029F                          ; 
-029F                          ; Put pointer to call address into HL
-029F   6F                     MOV   L,A   
-02A0                          ; ExecuteProgramLoop must be on the same page
-02A0                          ; page as PrintSub so that we don't have to
-02A0                          ; update H
-02A0                          ; Jump to it
-02A0                          ; Carry is clear when we do this
-02A0   E9                     PCHL   
-02A1                NEWSUB:   
-02A1   C7                     RST   0   
-02A2                          ; 
-02A2                LISTSUB:   
-02A2   01 40 10               LXI   B,PROG_BASE   
-02A5   C3 56 01               JMP   ListLoop   
+0277                          ; if result of xor above is 1
+0277                          ; then keep looping, or if HL
+0277                          ; is zero then keep looping
+0277                          ; 
+0277   D1                     POP   D   ; this is LoopStart
+0278                          ; 
+0278   FA 7E 02               JM   NextSubLoop   
+027B                          ; 
+027B   7C                     MOV   A,H   
+027C   B5                     ORA   L   
+027D   C0                     RNZ   
+027E                          ; 
+027E                NEXTSUBLOOP:   
+027E                          ; 
+027E   42                     MOV   B,D   
+027F   4B                     MOV   C,E   
+0280   21 F6 FF               LXI   H,-10   
+0283   39                     DAD   SP   
+0284   F9                     SPHL   
+0285                          ; 
+0285   C9                     RET   
+0286                          ; 
+0286                IFSUB:    
+0286   CD 3B 00               CALL   ExpEvaluate   
+0289   7A                     MOV   A,D   
+028A   B3                     ORA   E   
+028B   C0                     RNZ   
+028C                          ; If DE zero then fall through to next line
+028C   C3 D8 03               JMP   AdvanceToNextLineNum   
+028F                EXECUTEPROGRAM:   
+028F   37                     STC   ; skip over JNC Ready in a minute
+0290                          ; 
+0290                ENDPROGRAM:   ; executes the JNC Ready
+0290                          ; don't care what happens to BC
+0290                          ; if we are jumping to Ready
+0290                          ; 
+0290                          ; Point BC to first line
+0290                          ; Don't skip over the line number
+0290                          ; because we need the constant PROG_BASE
+0290                          ; at this location in memory
+0290   01 40 10               LXI   B,PROG_BASE   
+0293                ENDSUB:   
+0293   D2 DB 00               JNC   Ready   
+0296                EXECUTEPROGRAMLOOP:   
+0296   0A                     LDAX   B   
+0297                          ; 
+0297                EXECUTEDIRECT:   
+0297                          ; 
+0297   D6 27                  SUI   LineNumSub&0ffh   
+0299                          ; 
+0299                          ; Check that it is a token between
+0299                          ; LinenumSub and ListSub
+0299   FE 82                  CPI   (ListSub-LineNumSub+1)&0ffh   
+029B   D4 0A 04               CNC   Error   
+029E                          ; 
+029E   03                     INX   B   
+029F   C6 27                  ADI   LineNumSub&0ffh   
+02A1                          ; 
+02A1                          ; Carry is clear now
+02A1                          ; 
+02A1                          ; Put return address onto stack
+02A1   21 96 02               LXI   H,ExecuteProgramLoop   
+02A4   E5                     PUSH   H   
+02A5                          ; 
+02A5                          ; Put pointer to call address into HL
+02A5   6F                     MOV   L,A   
+02A6                          ; ExecuteProgramLoop must be on the same page
+02A6                          ; page as PrintSub so that we don't have to
+02A6                          ; update H
+02A6                          ; Jump to it
+02A6                          ; Carry is clear when we do this
+02A6   E9                     PCHL   
+02A7                NEWSUB:   
+02A7   C7                     RST   0   
 02A8                          ; 
-02A8                          ; ( ) , TO STEP tokens must have values between
-02A8                          ; statements and functions
-02A8                TOTOKEN:   EQU   ListSub+1   
-02A8                STEPTOKEN:   EQU   ListSub+2   
-02A8                RIGHTBRACETOKEN:   EQU   ListSub+3   
-02A8                COMMATOKEN:   EQU   ListSub+4   
-02A8                ABSSUB:   
-02A8                          ; A = right brace token, which has high bit
-02A8                          ; set, so no need to negate DE if XRA with D
-02A8                          ; still leaves high bit set
-02A8   AA                     XRA   D   
-02A9   F8                     RM   
+02A8                LISTSUB:   
+02A8   01 40 10               LXI   B,PROG_BASE   
+02AB   C3 56 01               JMP   ListLoop   
+02AE                          ; 
+02AE                          ; ( ) , TO STEP tokens must have values between
+02AE                          ; statements and functions
+02AE                TOTOKEN:   EQU   ListSub+1   
+02AE                STEPTOKEN:   EQU   ListSub+2   
+02AE                RIGHTBRACETOKEN:   EQU   ListSub+3   
+02AE                COMMATOKEN:   EQU   ListSub+4   
+02AE                ABSSUB:   
+02AE                          ; A = right brace token, which has high bit
+02AE                          ; set, so no need to negate DE if XRA with D
+02AE                          ; still leaves high bit set
+02AE   AA                     XRA   D   
+02AF   F8                     RM   
         **MACRO UNROLL - RST_NEGATEDE
-02AA   F7 RST   6   
-02AB                          ; 
-02AB                          ; shared code. okay for this to go here
-02AB                          ; because in ExpEvaluateNum, test for
-02AB                          ; left brace is before test for token
-02AB                          ; between first and last function
-02AB                LEFTBRACETOKEN:   
-02AB   C9                     RET   
-02AC                          ; 
-02AC                USRSUB:   
-02AC   EB                     XCHG   
-02AD   E9                     PCHL   
-02AE                RNDSUB:   
-02AE                          ; LCG
-02AE                          ; don't use low byte in return value.
-02AE                          ; Multiplier 47989 is mentioned here:
-02AE                          ; https://groups.google.com/g/prng/c/evszGs76o1w?pli=1
-02AE   D5                     PUSH   D   
-02AF   2A 3E 10               LHLD   RNG_SEED   
-02B2   11 75 BB               LXI   D,47989   
-02B5   CD E2 02               CALL   MulSub   ; A is zero after this
-02B8   EB                     XCHG   
-02B9   23                     INX   H   
-02BA   22 3E 10               SHLD   RNG_SEED   
-02BD                          ; Use only the high byte to get a value
-02BD                          ; between 0 and 255
-02BD   6C                     MOV   L,H   
-02BE   67                     MOV   H,A   
-02BF   D1                     POP   D   
-02C0                          ; 
-02C0   CD F6 02               CALL   DivideHL   
-02C3   EB                     XCHG   
-02C4   C9                     RET   
-02C5                          ; XORSHIFT taken from here
-02C5                          ; https://wikiti.brandonw.net/index.php?title=Z80_Routines:Math:Random
-02C5                          ;LHLD RNG_SEED
-02C5                          ;MOV A,H
-02C5                          ;RAR
-02C5                          ;MOV A,L
-02C5                          ;RAR
-02C5                          ;XRA H
-02C5                          ;MOV H,A
-02C5                          ;MOV A,L
-02C5                          ;RAR
-02C5                          ;MOV A,H
-02C5                          ;RAR
-02C5                          ;XRA L
-02C5                          ;MOV L,A
-02C5                          ;XRA H ; clears carry
-02C5                          ;MOV H,A
-02C5                          ;SHLD RNG_SEED
-02C5                          ; carry is clear at this point
-02C5                          ;RAR
-02C5                          ;MOV H,A
-02C5                          ; above 2 bytes give us a value between
-02C5                          ; 0 and 32767
-02C5                          ;CALL DivideHL
-02C5                          ;XCHG
-02C5                          ;RET
-02C5                          ; Token values >= this are all operators
-02C5                OPERATORS:   
-02C5                          ; 
-02C5                LTESUB:   
-02C5                          ; Swap operands and fall through
-02C5   EB                     XCHG   
-02C6                GTESUB:   
-        **MACRO UNROLL - RST_COMPAREHLDE
-02C6   EF RST   5   
-        **MACRO UNROLL - RST_JZPAGE
-02C7   E7 RST   4   
-02C8   D3                     DB   (BinReturn&0ffh)-1   
-02C9                GTSUB:    
-02C9                          ; Swap operands and fall through
+02B0   F7 RST   6   
+02B1                          ; 
+02B1                          ; shared code. okay for this to go here
+02B1                          ; because in ExpEvaluateNum, test for
+02B1                          ; left brace is before test for token
+02B1                          ; between first and last function
+02B1                LEFTBRACETOKEN:   
+02B1   C9                     RET   
+02B2                          ; 
+02B2                USRSUB:   
+02B2   EB                     XCHG   
+02B3   E9                     PCHL   
+02B4                RNDSUB:   
+02B4                          ; LCG
+02B4                          ; don't use low byte in return value.
+02B4                          ; Multiplier 47989 is mentioned here:
+02B4                          ; https://groups.google.com/g/prng/c/evszGs76o1w?pli=1
+02B4   D5                     PUSH   D   
+02B5   2A 3E 10               LHLD   RNG_SEED   
+02B8   11 75 BB               LXI   D,47989   
+02BB   CD E8 02               CALL   MulSub   ; A is zero after this
+02BE   EB                     XCHG   
+02BF   23                     INX   H   
+02C0   22 3E 10               SHLD   RNG_SEED   
+02C3                          ; Use only the high byte to get a value
+02C3                          ; between 0 and 255
+02C3   6C                     MOV   L,H   
+02C4   67                     MOV   H,A   
+02C5   D1                     POP   D   
+02C6                          ; 
+02C6   CD FC 02               CALL   DivideHL   
 02C9   EB                     XCHG   
-02CA                LTSUB:    
-02CA   7D                     MOV   A,L   
-02CB   93                     SUB   E   
-02CC   7C                     MOV   A,H   
-02CD   9A                     SBB   D   
-02CE   1F                     RAR   
-02CF   AC                     XRA   H   
-02D0   AA                     XRA   D   
-02D1   17                     RAL   
-02D2   3E                     DB   3eh   ; MVI A opcode to swallow next byte
-02D3                EQUALSUB:   
+02CA   C9                     RET   
+02CB                          ; XORSHIFT taken from here
+02CB                          ; https://wikiti.brandonw.net/index.php?title=Z80_Routines:Math:Random
+02CB                          ;LHLD RNG_SEED
+02CB                          ;MOV A,H
+02CB                          ;RAR
+02CB                          ;MOV A,L
+02CB                          ;RAR
+02CB                          ;XRA H
+02CB                          ;MOV H,A
+02CB                          ;MOV A,L
+02CB                          ;RAR
+02CB                          ;MOV A,H
+02CB                          ;RAR
+02CB                          ;XRA L
+02CB                          ;MOV L,A
+02CB                          ;XRA H ; clears carry
+02CB                          ;MOV H,A
+02CB                          ;SHLD RNG_SEED
+02CB                          ; carry is clear at this point
+02CB                          ;RAR
+02CB                          ;MOV H,A
+02CB                          ; above 2 bytes give us a value between
+02CB                          ; 0 and 32767
+02CB                          ;CALL DivideHL
+02CB                          ;XCHG
+02CB                          ;RET
+02CB                          ; Token values >= this are all operators
+02CB                OPERATORS:   
+02CB                          ; 
+02CB                LTESUB:   
+02CB                          ; Swap operands and fall through
+02CB   EB                     XCHG   
+02CC                GTESUB:   
         **MACRO UNROLL - RST_COMPAREHLDE
-02D3   EF RST   5   ; returns Z iff HL=DE
-02D4                BINRETURN:   
-02D4   3F                     CMC   
-02D5   3E                     DB   3eh   ; MVI A opcode to swallow next byte
-02D6                          ; 
-02D6                NOTEQUALSUB:   
-        **MACRO UNROLL - RST_COMPAREHLDE
-02D6   EF RST   5   ; returns Z iff HL=DE
-02D7   11 01 00               LXI   D,1   
-02DA   D0                     RNC   
-02DB   1B                     DCX   D   
-02DC   C9                     RET   
-02DD                ADDSUB:   
-02DD   3E                     DB   3eh   ; opcode for MVI A, to eat next byte
-02DE                SUBSUB:   
-        **MACRO UNROLL - RST_NEGATEDE
-02DE   F7 RST   6   
-02DF                          ;Add DE to HL and keep in DE
-02DF   19                     DAD   D   
-02E0   EB                     XCHG   
-02E1                          ; 
-02E1   C9                     RET   
-02E2                MULSUB:   
-02E2                          ; 20 bytes
-02E2                          ; multiple HL and DE into DE, preserving B
-02E2   C5                     PUSH   B   
-02E3   44                     MOV   B,H   
-02E4   4D                     MOV   C,L   
-02E5                MULTIPLY:   
-02E5                          ;multiply BC and DE into DE
-02E5   3E 10                  MVI   A,16   
-02E7                MULLOOP:   
-02E7   29                     DAD   H   
-02E8   EB                     XCHG   
-02E9   29                     DAD   H   
-02EA   EB                     XCHG   
-02EB   D2 EF 02               JNC   DontAdd   
-02EE   09                     DAD   B   
-02EF                DONTADD:   
-02EF   3D                     DCR   A   
-02F0   C2 E7 02               JNZ   MulLoop   
-02F3                          ; 
-02F3   EB                     XCHG   
-02F4   C1                     POP   B   
-02F5   C9                     RET   
-02F6                          ; 
-02F6                DIVSUB:   
-02F6                          ; 31 bytes
-02F6                          ;Divide HL by DE
-02F6                          ;Remainder in HL
-02F6                          ;Result in DE
-02F6                DIVIDEHL:   
-02F6                          ;Divide HL by DE
-02F6                          ; Make HL and DE different signs
-02F6   7C                     MOV   A,H   
-02F7   CD A8 02               CALL   AbsSub   
-02FA   F5                     PUSH   PSW   
-02FB                          ; 
-02FB                          ;Divide HL by DE
-02FB                          ;Assuming that HL and DE are different signs
-02FB   C5                     PUSH   B   
-02FC   01 FF FF               LXI   B,0ffffh   
-02FF                          ; 
-02FF                          ; Do the test for zero here because we want the
-02FF                          ; JZ to be on page 3
-02FF                          ; TODO - need to move this to earlier in DivSub
-02FF                          ; otherwise something other than the call address
-02FF                          ; is on the stack. (although actually maybe it is useful to have an address within the BASIC program)
-02FF   7A                     MOV   A,D   
-0300   B3                     ORA   E   
-0301                DIVJZERROR:   
-0301   CA D3 00               JZ   Error   
-0304                DIVLOOP:   
-0304   03                     INX   B   
-0305   19                     DAD   D   
-0306   1F                     RAR   ; look for mismatch between carry and
-0307                          ; bit 7 of D to detect overflow/underflow
-0307   AA                     XRA   D   
-0308   F2 04 03               JP   DivLoop   
-030B                          ; if HL is zero then it must have been a negative number originally, and the remainder is zero, so don't make any change to HL, but increment quotient by 1
-030B                          ; 
-030B   7C                     MOV   A,H   
-030C   B5                     ORA   L   
+02CC   EF RST   5   
         **MACRO UNROLL - RST_JZPAGE
-030D   E7 RST   4   ; assume it is on same page
-030E                          ; because DivSub will
-030E                          ; be right at end of page 2
-030E   11                     DB   (DivNoRestore&0ffh)-1   
-030F                          ; 
+02CD   E7 RST   4   
+02CE   D9                     DB   (BinReturn&0ffh)-1   
+02CF                GTSUB:    
+02CF                          ; Swap operands and fall through
+02CF   EB                     XCHG   
+02D0                LTSUB:    
+02D0   7D                     MOV   A,L   
+02D1   93                     SUB   E   
+02D2   7C                     MOV   A,H   
+02D3   9A                     SBB   D   
+02D4   1F                     RAR   
+02D5   AC                     XRA   H   
+02D6   AA                     XRA   D   
+02D7   17                     RAL   
+02D8   3E                     DB   3eh   ; MVI A opcode to swallow next byte
+02D9                EQUALSUB:   
+        **MACRO UNROLL - RST_COMPAREHLDE
+02D9   EF RST   5   ; returns Z iff HL=DE
+02DA                BINRETURN:   
+02DA   3F                     CMC   
+02DB   3E                     DB   3eh   ; MVI A opcode to swallow next byte
+02DC                          ; 
+02DC                NOTEQUALSUB:   
+        **MACRO UNROLL - RST_COMPAREHLDE
+02DC   EF RST   5   ; returns Z iff HL=DE
+02DD   11 01 00               LXI   D,1   
+02E0   D0                     RNC   
+02E1   1B                     DCX   D   
+02E2   C9                     RET   
+02E3                ADDSUB:   
+02E3   3E                     DB   3eh   ; opcode for MVI A, to eat next byte
+02E4                SUBSUB:   
         **MACRO UNROLL - RST_NEGATEDE
-030F   F7 RST   6   
-0310   19                     DAD   D   
-0311   0B                     DCX   B   
-0312                          ; 
-0312                DIVNORESTORE:   
-0312   03                     INX   B   
-0313   50                     MOV   D,B   
-0314   59                     MOV   E,C   
+02E4   F7 RST   6   
+02E5                          ;Add DE to HL and keep in DE
+02E5   19                     DAD   D   
+02E6   EB                     XCHG   
+02E7                          ; 
+02E7   C9                     RET   
+02E8                MULSUB:   
+02E8                          ; 20 bytes
+02E8                          ; multiple HL and DE into DE, preserving B
+02E8   C5                     PUSH   B   
+02E9   44                     MOV   B,H   
+02EA   4D                     MOV   C,L   
+02EB                MULTIPLY:   
+02EB                          ;multiply BC and DE into DE
+02EB   3E 10                  MVI   A,16   
+02ED                MULLOOP:   
+02ED   29                     DAD   H   
+02EE   EB                     XCHG   
+02EF   29                     DAD   H   
+02F0   EB                     XCHG   
+02F1   D2 F5 02               JNC   DontAdd   
+02F4   09                     DAD   B   
+02F5                DONTADD:   
+02F5   3D                     DCR   A   
+02F6   C2 ED 02               JNZ   MulLoop   
+02F9                          ; 
+02F9   EB                     XCHG   
+02FA   C1                     POP   B   
+02FB   C9                     RET   
+02FC                          ; 
+02FC                DIVSUB:   
+02FC                          ; 31 bytes
+02FC                          ;Divide HL by DE
+02FC                          ;Remainder in HL
+02FC                          ;Result in DE
+02FC                DIVIDEHL:   
+02FC                          ;Divide HL by DE
+02FC                          ; Make HL and DE different signs
+02FC   7C                     MOV   A,H   
+02FD   CD AE 02               CALL   AbsSub   
+0300   F5                     PUSH   PSW   
+0301                          ; 
+0301                          ;Divide HL by DE
+0301                          ;Assuming that HL and DE are different signs
+0301   C5                     PUSH   B   
+0302   01 FF FF               LXI   B,0ffffh   
+0305                          ; 
+0305                          ; Do the test for zero here because we want the
+0305                          ; CZ to be on page 3
+0305                          ; This means that divide by zero and unterminated
+0305                          ; string both have tbe same error code, but kt
+0305                          ; will be obvious to the programmer which is
+0305                          ; intended
+0305   7A                     MOV   A,D   
+0306   B3                     ORA   E   
+0307                DIVJZERROR:   
+0307   CC 0A 04               CZ   Error   
+030A                          ; 
+030A                DIVLOOP:   
+030A   03                     INX   B   
+030B   19                     DAD   D   
+030C   1F                     RAR   ; look for mismatch between carry and
+030D                          ; bit 7 of D to detect overflow/underflow
+030D   AA                     XRA   D   
+030E   F2 0A 03               JP   DivLoop   
+0311                          ; if HL is zero then it must have been a negative number originally, and the remainder is zero, so don't make any change to HL, but increment quotient by 1
+0311                          ; 
+0311   7C                     MOV   A,H   
+0312   B5                     ORA   L   
+        **MACRO UNROLL - RST_JZPAGE
+0313   E7 RST   4   ; assume it is on same page
+0314                          ; because DivSub will
+0314                          ; be right at end of page 2
+0314   17                     DB   (DivNoRestore&0ffh)-1   
 0315                          ; 
-0315   C1                     POP   B   
-0316                          ; 
-0316   F1                     POP   PSW   
-0317   F0                     RP   
         **MACRO UNROLL - RST_NEGATEDE
-0318   F7 RST   6   
-0319                          ; 
-0319   C9                     RET   
-031A                          ; 
-031A                          ; GetLine sits entirely in page 3
-031A                          ; good - it uses RST_CompareJump in two
-031A                          ; places, so be careful if moving it
-031A                          ; Also it assumes ClassLookup on same page
-031A                          ; as NoCharClass
-031A                NLTESTTRUE:   
-031A                          ; A contains 13 at this point
-031A                          ; we want to ooutput line feed (10)
-031A                          ; because H is 3, we can subtract this from A
-031A   94                     SUB   H   
-        **MACRO UNROLL - RST_PUTCHAR
-031B   CF RST   1   
+0315   F7 RST   6   
+0316   19                     DAD   D   
+0317   0B                     DCX   B   
+0318                          ; 
+0318                DIVNORESTORE:   
+0318   03                     INX   B   
+0319   50                     MOV   D,B   
+031A   59                     MOV   E,C   
+031B                          ; 
+031B   C1                     POP   B   
 031C                          ; 
-031C                          ; error if we are in the middle
-031C                          ; of a string
-031C   7D                     MOV   A,L   
-        **MACRO UNROLL - RST_COMPAREJUMP
-031D   DF RST   3   
-031E   6C                     DB   QuoteClassExpEnd&0ffh   
-031F   00                     DB   (DivJZError-1)&0ffh   
-0320                          ; 
-0320   E1                     POP   H   
-0321                          ; 
-0321   C9                     RET   
-0322                GETLINE:   
-0322                          ; HL points where we want the line to be
-0322                          ; parsed to.
-0322                          ; On return HL points to byte adter what we've
-0322                          ; got.
-0322                          ; 
-0322   3E 3E                  MVI   A,'>'   
-        **MACRO UNROLL - RST_PUTCHAR
-0324   CF RST   1   
-0325                          ; 
-0325   E5                     PUSH   H   
-0326                          ; 
-0326                          ; A is zero at this point
-0326                          ; (needs to be <>10 on fall to NLTest)
-0326                FRESHSTART:   
-0326   21 55 03               LXI   H,NoCharClass   
-0329                          ; 
-0329                NLTEST:   
-0329   78                     MOV   A,B   
-032A                          ; check for newline
-        **MACRO UNROLL - RST_COMPAREJUMP
-032A   DF RST   3   
-032B   0D 19                  DB   13,(NLTestTrue&0ffh)-1   
-032D                          ; 
-032D                NEXTCHARLOOP:   
-032D                          ; This code is compatable with Stefan Tramm's
-032D                          ; 8080 emulator
-032D   DB 00                  IN   0   
-032F   A7                     ANA   A   
-        **MACRO UNROLL - RST_JZPAGE
-0330   E7 RST   4   
-0331   2C                     DB   (NextCharLoop&0ffh)-1   
-0332   DB 01                  IN   1   
-0334   47                     MOV   B,A   
-0335   D3 01                  OUT   1   ; echo
-0337                          ; 
-0337                          ; Do we have the same class as before?
-0337   E5                     PUSH   H   
-0338   2E AA                  MVI   L,(ClassLookup&0ffh)-1   
-033A                          ; Test for quote first
-033A                          ; This doesn't save spave, but takes 3 bytes
-033A                          ; away from class lookip and puts them here
-033A                          ; so can be used to change odd/even of
-033A                          ; ...Class subroutines
-        **MACRO UNROLL - RST_COMPAREJUMP
-033A   DF RST   3   
-033B   22 42                  DB   34,(LC_QuoteTestTrue-1)&0ffh   
-033D                LOOKUPCLASSLOOP:   
-033D   2C                     INR   L   
-033E   BE                     CMP   M   
-033F   2C                     INR   L   
-0340   DA 3D 03               JC   LookupClassLoop   
-0343                LC_QUOTETESTTRUE:   
-0343   4E                     MOV   C,M   
-0344   E1                     POP   H   
-0345                          ; 
-0345                          ; are L and C equal?
-0345   7D                     MOV   A,L   
-0346   A9                     XRA   C   
-0347                          ; Z if they are equal, NZ if not
-0347   E9                     PCHL   ; Jump based on previous CharClass pointer
-0348                DIGITCLASS:   
-        **MACRO UNROLL - RST_JZPAGE
-0348   E7 RST   4   
-0349   59                     DB   (DigitClassNotEnd&0ffh)-1   
-034A                DIGITCLASSEND:   
-034A                          ; Write token into program
-034A                          ; need to preserve DE, don't care about HL
-034A   E3                     XTHL   
-034B   36 20                  MVI   M,IntegerToken   
-034D   23                     INX   H   
-034E   73                     MOV   M,E   
-034F   23                     INX   H   
-0350   36                     DB   36h   ; opcode for MVI M eats next byte
-0351                WRITE_SHARED_ATSP:   
-0351   D1                     POP   D   
-0352                WRITE_SHARED:   
-0352   72                     MOV   M,D   
-0353                WRITE_SHARED_WRITTEN:   
-0353   23                     INX   H   
-0354   E3                     XTHL   
-0355                NOCHARCLASS:   
-0355   69                     MOV   L,C   
-0356   AF                     XRA   A   ; set Z
-0357   57                     MOV   D,A   ; reset state information
-0358   5F                     MOV   E,A   
-0359   E9                     PCHL   
-035A                DIGITCLASSNOTEND:   
-035A   E5                     PUSH   H   
-035B                          ; A is zero at this point
-035B                          ; Accumulate the value into D
-035B                          ; Muliply by 10
-035B   62                     MOV   H,D   
-035C   6B                     MOV   L,E   
-035D                          ; 
-035D   29                     DAD   H   
-035E   29                     DAD   H   
-035F   19                     DAD   D   
-0360   29                     DAD   H   
-0361                          ; 
-0361                          ; Add in the new digit
-0361                          ; 
-0361   57                     MOV   D,A   
-0362   78                     MOV   A,B   
-0363   E6 0F                  ANI   0fh   
-0365   5F                     MOV   E,A   
-0366   19                     DAD   D   
-0367                          ; 
-0367   EB                     XCHG   
-0368                          ; 
-0368   E1                     POP   H   
-0369                          ; 
-0369   C3 2D 03               JMP   NextCharLoop   
-036C                QUOTECLASSEXPEND:   
-036C                          ; A is equal to:
-036C                          ; char class (C) XOR QuoteCharClassExpEnd
-036C                          ; 
-036C                          ; so long as QuoteCharClass is the only class
-036C                          ; with an odd address or the only one
-036C                          ; with an even address then A will only
-036C                          ; have LSB=1 if current char class
-036C                          ; is QuoteCharClass - i.e. end of string
-036C                          ; 
-036C   E6                     DB   0e6h   ; opcode for ANI eats next byte
-036D                          ; (which is 2dh lsbits are 01)
-036D                          ; 
-036D                QUOTECLASS:   
-036D   2D                     DCR   L   ; set to QuoteClassExpEnd
-036E                          ; first time through A is zero
-036E                          ; on fall A is even unless C is QuoteClass
-036E                          ; 
-036E   A4                     ANA   H   ; H is 3
-036F                          ; 
-036F                          ; Now Z is set if this was first Quote, or if
-036F                          ; we are in a string and haven't reached
-036F                          ; last quote
-036F                          ; 
-036F                          ; carry is clear here
-036F   DA                     DB   0dah   ; opcode for JC eats next 2 bytes
-0370                LT0CLASS:   
-0370   23                     INX   H   ; next char should always count as
-0371                          ; different class
-0371   00                     NOP   
-0372                COMPCLASS:   
-0372   00                     NOP   
-0373   00                     NOP   
-0374                ALPHACLASS:   
-0374                          ; 
-0374   E3                     XTHL   
-0375   70                     MOV   M,B   
-0376   23                     INX   H   
-0377   E3                     XTHL   
-0378                          ; 
-0378   1B                     DCX   D   ; increase char count
-0379                          ; 
-0379                          ; if NZ then we will just
-0379                          ; have written a different class char:
-0379                          ; good, this ensures no spurious
-0379                          ; strcmp matches from leftover
-0379                          ; buffer contents
-0379                          ; 
-0379                          ; now we need to decide whether to jump to:
-0379                          ; FreshStart - if its the last quote in
-0379                          ;							 a string
-0379                          ; NLTest		 - if part way through string or
-0379                          ;								token
-0379                          ; TokenClassEnd - if end of token
-0379                          ; 
-        **MACRO UNROLL - RST_JZPAGE
-0379   E7 RST   4   
-037A   28                     DB   (NLTest&0ffh)-1   
-037B                          ; 
-037B   7D                     MOV   A,L   
-        **MACRO UNROLL - RST_COMPAREJUMP
-037C   DF RST   3   
-037D   6C 25                  DB   QuoteClassExpEnd&0ffh,(FreshStart&0ffh)-1   
-037F                          ; 
-037F                TOKENCLASSEND:   
-037F                          ; Make H point to the start of the token
-037F                          ; to be looked up
-037F   E3                     XTHL   
-0380   19                     DAD   D   
-0381                          ; 
-0381                          ; it's a var if bits 7,6,5 are 010 and
-0381                          ; E=-2
-0381                          ; TODO These aren't the only conditions that
-0381                          ; could lead to the test below passing -
-0381                          ; e.g. if 7,6,5=001 and E=10011110.
-0381   7E                     MOV   A,M   
-0382   EE 40                  XRI   040h   
-0384   57                     MOV   D,A   
-0385   E6 E0                  ANI   0e0h   
-0387   AB                     XRA   E   
-0388                          ; 
-        **MACRO UNROLL - RST_COMPAREJUMP
-0388   DF RST   3   
-0389   FE 51                  DB   0feh,(Write_Shared&0ffh)-1   
-038B                          ; 
-038B   11 B4 01               LXI   D,TokenList   
-038E                LOOKUPTOKEN_LOOP:   
-038E   1A                     LDAX   D   
-038F   F5                     PUSH   PSW   
-0390   E5                     PUSH   H   
-0391                STRCMP:   
-0391   13                     INX   D   
-0392   1A                     LDAX   D   
-0393   AE                     XRA   M   
-0394                          ; iff match then A is either 00h or 80h
-0394                          ; (80h if last char)
-0394   23                     INX   H   
-        **MACRO UNROLL - RST_JZPAGE
-0395   E7 RST   4   
-0396   90                     DB   (Strcmp&0ffh)-1   ; match and not last char
-0397                          ; 
-0397                          ; equal to 080h iff match and last char
-0397   EE 80                  XRI   080h   
-0399                          ; equal to Z iff match and last char
-0399   E1                     POP   H   
-039A                          ; 
-        **MACRO UNROLL - RST_JZPAGE
-039A   E7 RST   4   
-039B   50                     DB   (Write_Shared_AtSP&0ffh)-1   
-039C                          ; 
-039C   F1                     POP   PSW   
-039D                          ; 
-039D                LOOKUPTOKEN:   
-039D   1A                     LDAX   D   
-039E   3C                     INR   A   
-039F   13                     INX   D   
-03A0   FA 8E 03               JM   LookupToken_Loop   
-03A3   C2 9D 03               JNZ   LookupToken   
-03A6                          ; 
-03A6                          ; didn't find it
-03A6                          ; if (HL)>=64 and (HL+1)<64 then its a var
-03A6                          ; could do the var test here
-03A6                          ; if it can be done in few bytes
-03A6                          ; 
-03A6   36 21                  MVI   M,QuestionMarkToken&0ffh   
-        **MACRO UNROLL - RST_JZPAGE
-03A8   E7 RST   4   
-03A9   52                     DB   (Write_Shared_Written&0ffh)-1   
-03AA   6D                     DB   QuoteClass&0ffh   
-03AB                CLASSLOOKUP:   
-03AB   40 74                  DB   64,AlphaClass&0ffh   
-03AD   3A 72                  DB   58,CompClass&0ffh   
-03AF   30 48                  DB   48,DigitClass&0ffh   
-03B1   21 70                  DB   33,LT0Class&0ffh   
-03B3   00 26                  DB   0,FreshStart&0ffh   
-03B5                GETLINENUM:   
-03B5                          ; Line number is in DE, look it up in the program and set BC to the line num token
-03B5                          ; DE is preserved
-03B5                          ; H is preserved
-03B5                          ; L is not preserved
-03B5                          ; 
-03B5                          ; return with Z set if successful
-03B5                          ; 
-03B5                          ; Z clear if not successful, and BC points
-03B5                          ; to the first byte of the line with number
-03B5                          ; greater than the request
-03B5                          ; 
-03B5   01 3F 10               LXI   B,PROG_BASE-1   ; 1 bytes before PROG_BASE
-03B8                GETLINENUMLOOP:   
-03B8   CD D1 03               CALL   ATNLN_INXB   ; has one INX B preceeding
-03BB   C0                     RNZ   
-03BC                          ; 
-03BC   03                     INX   B   
-03BD                          ; 
-03BD                          ; Test for DE <= (BC), and return if true
-03BD   0A                     LDAX   B   
-03BE   03                     INX   B   
-03BF   93                     SUB   E   
-03C0   6F                     MOV   L,A   
-03C1   0A                     LDAX   B   
-03C2   9A                     SBB   D   ; C set if DE > (BC), and Z not set
-03C3                          ; C clear if DE <= (BC)
-03C3   DA B8 03               JC   GetLineNumLoop   
-03C6                          ; 
-03C6   0B                     DCX   B   
-03C7   0B                     DCX   B   
-03C8                          ; Now we want Z set if DE=(BC), clear
-03C8                          ; otherwise
-03C8                          ; 
-03C8                ATNLN_RETNZ:   ; shared code. Returns NZ if we know
-03C8                          ; that A is non-zero
-03C8   B5                     ORA   L   
-03C9                          ; 
-03C9   C9                     RET   
-03CA                ATNLN_STRING:   
-        **MACRO UNROLL - RST_LDAXB_INXB_CPI
-03CA   D7 RST   2   
-03CB   22                     DB   StringToken   
-03CC   C2 CA 03               JNZ   ATNLN_String   
-03CF                          ; 
-03CF   C2                     DB   0c2h   ; opcode for JNZ eats 2 bytes
-03D0                ATNLN_INT:   ; Z is always set when we reach here
-03D0   03                     INX   B   
-03D1                ATNLN_INXB:   
-03D1   03                     INX   B   
-03D2                          ; 
-03D2                ADVANCETONEXTLINENUM:   
-03D2                          ; BC is a pointer to somewhere in the program
-03D2                          ; move onto the next line number
-03D2                          ; return with Z set if successful
-03D2                          ; Z clear if fell off end of program
-03D2   0A                     LDAX   B   
-        **MACRO UNROLL - RST_COMPAREJUMP
-03D3   DF RST   3   
-03D4   8A C7                  DB   EndProgram&0ffh,(ATNLN_RetNZ&0ffh)-1   
-03D6                          ; fell off end of program
-03D6                          ; 
-03D6   FE 27                  CPI   LinenumSub&0ffh   
-03D8   C8                     RZ   
-03D9                          ; 
-03D9   03                     INX   B   
-03DA                          ; 
-        **MACRO UNROLL - RST_COMPAREJUMP
-03DA   DF RST   3   
-03DB   20 CF                  DB   IntegerToken,(ATNLN_Int&0ffh)-1   
-        **MACRO UNROLL - RST_COMPAREJUMP
-03DD   DF RST   3   
-03DE   22 C9                  DB   StringToken,(ATNLN_String&0ffh)-1   
-03E0   C3 D2 03               JMP   AdvanceToNextLineNum   
-03E3                FORSUBIMPL:   
-03E3                          ; Stack contains return address:
-03E3                          ; ExecuteProgramLoop - EPL
-03E3                          ; Keep it there even though it isn't used by
-03E3                          ; ForSub, it will be used by NextSub
-03E3                          ; 
-03E3                          ; 
-03E3   E5                     PUSH   H   ; stack has var addr + 1 (VL+1), EPL
-03E4                          ; 
-        **MACRO UNROLL - RST_LDAXB_INXB_CPI
-03E4   D7 RST   2   
-03E5                          ; 
-03E5   A3                     DB   ToToken&0ffh   
-03E6   C4 D3 00               CNZ   Error   
-03E9                          ; 
-        **MACRO UNROLL - RST_EXPEVALUATE
-03E9   FF RST   7   
+031C   F1                     POP   PSW   
+031D   F0                     RP   
         **MACRO UNROLL - RST_NEGATEDE
-03EA   F7 RST   6   
-03EB                          ; 
-03EB   D5                     PUSH   D   ; stack contains -T,VL+1, EPL
-03EC                          ; T is target
-03EC                          ; 
-03EC   11 01 00               LXI   D,1   
-03EF   0A                     LDAX   B   
-03F0                          ; 
+031E   F7 RST   6   
+031F                          ; 
+031F   C9                     RET   
+0320                          ; 
+0320                          ; GetLine sits entirely in page 3
+0320                          ; good - it uses RST_CompareJump in two
+0320                          ; places, so be careful if moving it
+0320                          ; Also it assumes ClassLookup on same page
+0320                          ; as NoCharClass
+0320                NLTESTTRUE:   
+0320                          ; A contains 13 at this point
+0320                          ; we want to ooutput line feed (10)
+0320                          ; because H is 3, we can subtract this from A
+0320   94                     SUB   H   
+        **MACRO UNROLL - RST_PUTCHAR
+0321   CF RST   1   
+0322                          ; 
+0322                          ; error if we are in the middle
+0322                          ; of a string
+0322   7D                     MOV   A,L   
         **MACRO UNROLL - RST_COMPAREJUMP
-03F0   DF RST   3   
-03F1   A4 F3                  DB   StepToken&0ffh,(ForWithStep&0ffh)-1   
-03F3   21                     DB   21h   ; LXI H opcode eats the next 2 bytes
-03F4                FORWITHSTEP:   
-03F4                          ; we have step token
-03F4   03                     INX   B   
-        **MACRO UNROLL - RST_EXPEVALUATE
-03F5   FF RST   7   
-03F6                          ; 
-03F6   E1                     POP   H   
-03F7   E1                     POP   H   
-03F8   C5                     PUSH   B   ; stack contains -T,LS,EPL
-03F9   3B                     DCX   SP   
-03FA   3B                     DCX   SP   
-03FB   D5                     PUSH   D   ; stack contains S,-T,LS,EPL
-03FC   E5                     PUSH   H   ; stack contains VL+1,S,-T,LS,EPL
-03FD                          ; 
-03FD   C3 90 02               JMP   ExecuteProgramLoop   
+0323   DF RST   3   
+0324   72                     DB   QuoteClassExpEnd&0ffh   
+0325   06                     DB   (DivJZError-1)&0ffh   
+0326                          ; 
+0326   E1                     POP   H   
+0327                          ; 
+0327   C9                     RET   
+0328                GETLINE:   
+0328                          ; HL points where we want the line to be
+0328                          ; parsed to.
+0328                          ; On return HL points to byte adter what we've
+0328                          ; got.
+0328                          ; 
+0328   3E 3E                  MVI   A,'>'   
+        **MACRO UNROLL - RST_PUTCHAR
+032A   CF RST   1   
+032B                          ; 
+032B   E5                     PUSH   H   
+032C                          ; 
+032C                          ; A is zero at this point
+032C                          ; (needs to be <>10 on fall to NLTest)
+032C                FRESHSTART:   
+032C   21 5B 03               LXI   H,NoCharClass   
+032F                          ; 
+032F                NLTEST:   
+032F   78                     MOV   A,B   
+0330                          ; check for newline
+        **MACRO UNROLL - RST_COMPAREJUMP
+0330   DF RST   3   
+0331   0D 1F                  DB   13,(NLTestTrue&0ffh)-1   
+0333                          ; 
+0333                NEXTCHARLOOP:   
+0333                          ; This code is compatable with Stefan Tramm's
+0333                          ; 8080 emulator
+0333   DB 00                  IN   0   
+0335   A7                     ANA   A   
+        **MACRO UNROLL - RST_JZPAGE
+0336   E7 RST   4   
+0337   32                     DB   (NextCharLoop&0ffh)-1   
+0338   DB 01                  IN   1   
+033A   47                     MOV   B,A   
+033B   D3 01                  OUT   1   ; echo
+033D                          ; 
+033D                          ; Do we have the same class as before?
+033D   E5                     PUSH   H   
+033E   2E B0                  MVI   L,(ClassLookup&0ffh)-1   
+0340                          ; Test for quote first
+0340                          ; This doesn't save spave, but takes 3 bytes
+0340                          ; away from class lookip and puts them here
+0340                          ; so can be used to change odd/even of
+0340                          ; ...Class subroutines
+        **MACRO UNROLL - RST_COMPAREJUMP
+0340   DF RST   3   
+0341   22 48                  DB   34,(LC_QuoteTestTrue-1)&0ffh   
+0343                LOOKUPCLASSLOOP:   
+0343   2C                     INR   L   
+0344   BE                     CMP   M   
+0345   2C                     INR   L   
+0346   DA 43 03               JC   LookupClassLoop   
+0349                LC_QUOTETESTTRUE:   
+0349   4E                     MOV   C,M   
+034A   E1                     POP   H   
+034B                          ; 
+034B                          ; are L and C equal?
+034B   7D                     MOV   A,L   
+034C   A9                     XRA   C   
+034D                          ; Z if they are equal, NZ if not
+034D   E9                     PCHL   ; Jump based on previous CharClass pointer
+034E                DIGITCLASS:   
+        **MACRO UNROLL - RST_JZPAGE
+034E   E7 RST   4   
+034F   5F                     DB   (DigitClassNotEnd&0ffh)-1   
+0350                DIGITCLASSEND:   
+0350                          ; Write token into program
+0350                          ; need to preserve DE, don't care about HL
+0350   E3                     XTHL   
+0351   36 20                  MVI   M,IntegerToken   
+0353   23                     INX   H   
+0354   73                     MOV   M,E   
+0355   23                     INX   H   
+0356   36                     DB   36h   ; opcode for MVI M eats next byte
+0357                WRITE_SHARED_ATSP:   
+0357   D1                     POP   D   
+0358                WRITE_SHARED:   
+0358   72                     MOV   M,D   
+0359                WRITE_SHARED_WRITTEN:   
+0359   23                     INX   H   
+035A   E3                     XTHL   
+035B                NOCHARCLASS:   
+035B   69                     MOV   L,C   
+035C   AF                     XRA   A   ; set Z
+035D   57                     MOV   D,A   ; reset state information
+035E   5F                     MOV   E,A   
+035F   E9                     PCHL   
+0360                DIGITCLASSNOTEND:   
+0360   E5                     PUSH   H   
+0361                          ; A is zero at this point
+0361                          ; Accumulate the value into D
+0361                          ; Muliply by 10
+0361   62                     MOV   H,D   
+0362   6B                     MOV   L,E   
+0363                          ; 
+0363   29                     DAD   H   
+0364   29                     DAD   H   
+0365   19                     DAD   D   
+0366   29                     DAD   H   
+0367                          ; 
+0367                          ; Add in the new digit
+0367                          ; 
+0367   57                     MOV   D,A   
+0368   78                     MOV   A,B   
+0369   E6 0F                  ANI   0fh   
+036B   5F                     MOV   E,A   
+036C   19                     DAD   D   
+036D                          ; 
+036D   EB                     XCHG   
+036E                          ; 
+036E   E1                     POP   H   
+036F                          ; 
+036F   C3 33 03               JMP   NextCharLoop   
+0372                QUOTECLASSEXPEND:   
+0372                          ; A is equal to:
+0372                          ; char class (C) XOR QuoteCharClassExpEnd
+0372                          ; 
+0372                          ; so long as QuoteCharClass is the only class
+0372                          ; with an odd address or the only one
+0372                          ; with an even address then A will only
+0372                          ; have LSB=1 if current char class
+0372                          ; is QuoteCharClass - i.e. end of string
+0372                          ; 
+0372   E6                     DB   0e6h   ; opcode for ANI eats next byte
+0373                          ; (which is 2dh lsbits are 01)
+0373                          ; 
+0373                QUOTECLASS:   
+0373   2D                     DCR   L   ; set to QuoteClassExpEnd
+0374                          ; first time through A is zero
+0374                          ; on fall A is even unless C is QuoteClass
+0374                          ; 
+0374   A4                     ANA   H   ; H is 3
+0375                          ; 
+0375                          ; Now Z is set if this was first Quote, or if
+0375                          ; we are in a string and haven't reached
+0375                          ; last quote
+0375                          ; 
+0375                          ; carry is clear here
+0375   DA                     DB   0dah   ; opcode for JC eats next 2 bytes
+0376                LT0CLASS:   
+0376   23                     INX   H   ; next char should always count as
+0377                          ; different class
+0377   00                     NOP   
+0378                COMPCLASS:   
+0378   00                     NOP   
+0379   00                     NOP   
+037A                ALPHACLASS:   
+037A                          ; 
+037A   E3                     XTHL   
+037B   70                     MOV   M,B   
+037C   23                     INX   H   
+037D   E3                     XTHL   
+037E                          ; 
+037E   1B                     DCX   D   ; increase char count
+037F                          ; 
+037F                          ; if NZ then we will just
+037F                          ; have written a different class char:
+037F                          ; good, this ensures no spurious
+037F                          ; strcmp matches from leftover
+037F                          ; buffer contents
+037F                          ; 
+037F                          ; now we need to decide whether to jump to:
+037F                          ; FreshStart - if its the last quote in
+037F                          ;							 a string
+037F                          ; NLTest		 - if part way through string or
+037F                          ;								token
+037F                          ; TokenClassEnd - if end of token
+037F                          ; 
+        **MACRO UNROLL - RST_JZPAGE
+037F   E7 RST   4   
+0380   2E                     DB   (NLTest&0ffh)-1   
+0381                          ; 
+0381   7D                     MOV   A,L   
+        **MACRO UNROLL - RST_COMPAREJUMP
+0382   DF RST   3   
+0383   72 2B                  DB   QuoteClassExpEnd&0ffh,(FreshStart&0ffh)-1   
+0385                          ; 
+0385                TOKENCLASSEND:   
+0385                          ; Make H point to the start of the token
+0385                          ; to be looked up
+0385   E3                     XTHL   
+0386   19                     DAD   D   
+0387                          ; 
+0387                          ; it's a var if bits 7,6,5 are 010 and
+0387                          ; E=-2
+0387                          ; TODO These aren't the only conditions that
+0387                          ; could lead to the test below passing -
+0387                          ; e.g. if 7,6,5=001 and E=10011110.
+0387   7E                     MOV   A,M   
+0388   EE 40                  XRI   040h   
+038A   57                     MOV   D,A   
+038B   E6 E0                  ANI   0e0h   
+038D   AB                     XRA   E   
+038E                          ; 
+        **MACRO UNROLL - RST_COMPAREJUMP
+038E   DF RST   3   
+038F   FE 57                  DB   0feh,(Write_Shared&0ffh)-1   
+0391                          ; 
+0391   11 B4 01               LXI   D,TokenList   
+0394                LOOKUPTOKEN_LOOP:   
+0394   1A                     LDAX   D   
+0395   F5                     PUSH   PSW   
+0396   E5                     PUSH   H   
+0397                STRCMP:   
+0397   13                     INX   D   
+0398   1A                     LDAX   D   
+0399   AE                     XRA   M   
+039A                          ; iff match then A is either 00h or 80h
+039A                          ; (80h if last char)
+039A   23                     INX   H   
+        **MACRO UNROLL - RST_JZPAGE
+039B   E7 RST   4   
+039C   96                     DB   (Strcmp&0ffh)-1   ; match and not last char
+039D                          ; 
+039D                          ; equal to 080h iff match and last char
+039D   EE 80                  XRI   080h   
+039F                          ; equal to Z iff match and last char
+039F   E1                     POP   H   
+03A0                          ; 
+        **MACRO UNROLL - RST_JZPAGE
+03A0   E7 RST   4   
+03A1   56                     DB   (Write_Shared_AtSP&0ffh)-1   
+03A2                          ; 
+03A2   F1                     POP   PSW   
+03A3                          ; 
+03A3                LOOKUPTOKEN:   
+03A3   1A                     LDAX   D   
+03A4   3C                     INR   A   
+03A5   13                     INX   D   
+03A6   FA 94 03               JM   LookupToken_Loop   
+03A9   C2 A3 03               JNZ   LookupToken   
+03AC                          ; 
+03AC                          ; didn't find it
+03AC                          ; if (HL)>=64 and (HL+1)<64 then its a var
+03AC                          ; could do the var test here
+03AC                          ; if it can be done in few bytes
+03AC                          ; 
+03AC   36 21                  MVI   M,QuestionMarkToken&0ffh   
+        **MACRO UNROLL - RST_JZPAGE
+03AE   E7 RST   4   
+03AF   58                     DB   (Write_Shared_Written&0ffh)-1   
+03B0   73                     DB   QuoteClass&0ffh   
+03B1                CLASSLOOKUP:   
+03B1   40 7A                  DB   64,AlphaClass&0ffh   
+03B3   3A 78                  DB   58,CompClass&0ffh   
+03B5   30 4E                  DB   48,DigitClass&0ffh   
+03B7   21 76                  DB   33,LT0Class&0ffh   
+03B9   00 2C                  DB   0,FreshStart&0ffh   
+03BB                GETLINENUM:   
+03BB                          ; Line number is in DE, look it up in the program and set BC to the line num token
+03BB                          ; DE is preserved
+03BB                          ; H is preserved
+03BB                          ; L is not preserved
+03BB                          ; 
+03BB                          ; return with Z set if successful
+03BB                          ; 
+03BB                          ; Z clear if not successful, and BC points
+03BB                          ; to the first byte of the line with number
+03BB                          ; greater than the request
+03BB                          ; 
+03BB   01 3F 10               LXI   B,PROG_BASE-1   ; 1 bytes before PROG_BASE
+03BE                GETLINENUMLOOP:   
+03BE   CD D7 03               CALL   ATNLN_INXB   ; has one INX B preceeding
+03C1   C0                     RNZ   
+03C2                          ; 
+03C2   03                     INX   B   
+03C3                          ; 
+03C3                          ; Test for DE <= (BC), and return if true
+03C3   0A                     LDAX   B   
+03C4   03                     INX   B   
+03C5   93                     SUB   E   
+03C6   6F                     MOV   L,A   
+03C7   0A                     LDAX   B   
+03C8   9A                     SBB   D   ; C set if DE > (BC), and Z not set
+03C9                          ; C clear if DE <= (BC)
+03C9   DA BE 03               JC   GetLineNumLoop   
+03CC                          ; 
+03CC   0B                     DCX   B   
+03CD   0B                     DCX   B   
+03CE                          ; Now we want Z set if DE=(BC), clear
+03CE                          ; otherwise
+03CE                          ; 
+03CE                ATNLN_RETNZ:   ; shared code. Returns NZ if we know
+03CE                          ; that A is non-zero
+03CE   B5                     ORA   L   
+03CF                          ; 
+03CF   C9                     RET   
+03D0                ATNLN_STRING:   
+        **MACRO UNROLL - RST_LDAXB_INXB_CPI
+03D0   D7 RST   2   
+03D1   22                     DB   StringToken   
+03D2   C2 D0 03               JNZ   ATNLN_String   
+03D5                          ; 
+03D5   C2                     DB   0c2h   ; opcode for JNZ eats 2 bytes
+03D6                ATNLN_INT:   ; Z is always set when we reach here
+03D6   03                     INX   B   
+03D7                ATNLN_INXB:   
+03D7   03                     INX   B   
+03D8                          ; 
+03D8                ADVANCETONEXTLINENUM:   
+03D8                          ; BC is a pointer to somewhere in the program
+03D8                          ; move onto the next line number
+03D8                          ; return with Z set if successful
+03D8                          ; Z clear if fell off end of program
+03D8   0A                     LDAX   B   
+        **MACRO UNROLL - RST_COMPAREJUMP
+03D9   DF RST   3   
+03DA   90 CD                  DB   EndProgram&0ffh,(ATNLN_RetNZ&0ffh)-1   
+03DC                          ; fell off end of program
+03DC                          ; 
+03DC   FE 27                  CPI   LinenumSub&0ffh   
+03DE   C8                     RZ   
+03DF                          ; 
+03DF   03                     INX   B   
+03E0                          ; 
+        **MACRO UNROLL - RST_COMPAREJUMP
+03E0   DF RST   3   
+03E1   20 D5                  DB   IntegerToken,(ATNLN_Int&0ffh)-1   
+        **MACRO UNROLL - RST_COMPAREJUMP
+03E3   DF RST   3   
+03E4   22 CF                  DB   StringToken,(ATNLN_String&0ffh)-1   
+03E6   C3 D8 03               JMP   AdvanceToNextLineNum   
+03E9                FORSUBIMPL:   
+03E9                          ; Stack contains return address:
+03E9                          ; ExecuteProgramLoop - EPL
+03E9                          ; Keep it there even though it isn't used by
+03E9                          ; ForSub, it will be used by NextSub
+03E9                          ; 
+03E9                          ; 
+03E9   E5                     PUSH   H   ; stack has var addr + 1 (VL+1), EPL
+03EA                          ; 
+        **MACRO UNROLL - RST_LDAXB_INXB_CPI
+03EA   D7 RST   2   
+03EB                          ; 
+03EB   A9                     DB   ToToken&0ffh   
+03EC   C4 0A 04               CNZ   Error   
+03EF                          ; 
+03EF   CD 3B 00               CALL   ExpEvaluate   
+        **MACRO UNROLL - RST_NEGATEDE
+03F2   F7 RST   6   
+03F3                          ; 
+03F3   D5                     PUSH   D   ; stack contains -T,VL+1, EPL
+03F4                          ; T is target
+03F4                          ; 
+03F4   11 01 00               LXI   D,1   
+        **MACRO UNROLL - RST_LDAXB_INXB_CPI
+03F7   D7 RST   2   
+03F8   AA                     DB   StepToken&0ffh   
+        **MACRO UNROLL - RST_JZPAGE
+03F9   E7 RST   4   
+03FA   FC                     DB   (ForWithStep&0ffh)-1   
+03FB   0B                     DCX   B   
+03FC   21                     DB   21h   ; LXI H opcode eats the next 2 bytes
+03FD                          ; because ExpEvaluate is on page 0
+03FD                          ; the 3rd byte is NOP
+03FD                FORWITHSTEP:   
+03FD                          ; we have step token
+03FD   CD 3B 00               CALL   ExpEvaluate   
 0400                          ; 
+0400   E1                     POP   H   
+0401   E1                     POP   H   
+0402   C5                     PUSH   B   ; stack contains -T,LS,EPL
+0403   3B                     DCX   SP   
+0404   3B                     DCX   SP   
+0405   D5                     PUSH   D   ; stack contains S,-T,LS,EPL
+0406   E5                     PUSH   H   ; stack contains VL+1,S,-T,LS,EPL
+0407                          ; 
+0407   C3 96 02               JMP   ExecuteProgramLoop   
+040A                ERROR:    
+040A   CD A1 00               CALL   CRLF   
+040D   3E 45                  MVI   A,'E'   
+        **MACRO UNROLL - RST_PUTCHAR
+040F   CF RST   1   
+0410   D1                     POP   D   
+0411   CD 8C 01               CALL   PrintInteger   
+0414   C3 DB 00               JMP   Ready   
 
 
-RAM_BASE:           1000 DEFINED AT LINE 303
-                    > USED AT LINE 333
-                    > USED AT LINE 337
-                    > USED AT LINE 340
-                    > USED AT LINE 341
-                    > USED AT LINE 343
-RAM_TOP:            1400 DEFINED AT LINE 304
-                    > USED AT LINE 329
-                    > USED AT LINE 330
-INTEGERTOKEN:       0020 DEFINED AT LINE 310
-                    > USED AT LINE 523
-                    > USED AT LINE 779
-                    > USED AT LINE 949
-                    > USED AT LINE 1622
-                    > USED AT LINE 1880
-QUESTIONMARKTOKEN:  0021 DEFINED AT LINE 311
-                    > USED AT LINE 1052
-                    > USED AT LINE 1799
-STRINGTOKEN:        0022 DEFINED AT LINE 312
-                    > USED AT LINE 639
-                    > USED AT LINE 702
-                    > USED AT LINE 945
-                    > USED AT LINE 1854
-                    > USED AT LINE 1882
-INPUT_BUFFER:       13F8 DEFINED AT LINE 329
-                    > USED AT LINE 1182
-STACK_INIT:         13F8 DEFINED AT LINE 330
-                    > USED AT LINE 754
+RAM_BASE:           1000 DEFINED AT LINE 308
+                    > USED AT LINE 338
+                    > USED AT LINE 342
+                    > USED AT LINE 345
+                    > USED AT LINE 346
+                    > USED AT LINE 348
+RAM_TOP:            1400 DEFINED AT LINE 309
+                    > USED AT LINE 334
+                    > USED AT LINE 335
+INTEGERTOKEN:       0020 DEFINED AT LINE 315
+                    > USED AT LINE 527
+                    > USED AT LINE 778
+                    > USED AT LINE 948
+                    > USED AT LINE 1619
+                    > USED AT LINE 1877
+QUESTIONMARKTOKEN:  0021 DEFINED AT LINE 316
+                    > USED AT LINE 1051
+                    > USED AT LINE 1796
+STRINGTOKEN:        0022 DEFINED AT LINE 317
+                    > USED AT LINE 643
+                    > USED AT LINE 706
+                    > USED AT LINE 944
+                    > USED AT LINE 1851
+                    > USED AT LINE 1879
+INPUT_BUFFER:       13F8 DEFINED AT LINE 334
                     > USED AT LINE 1169
-VAR_SPACE:          1000 DEFINED AT LINE 333
-                    > USED AT LINE 674
-PROG_PTR:           1000 DEFINED AT LINE 337
-                    > USED AT LINE 366
-                    > USED AT LINE 758
-                    > USED AT LINE 799
-                    > USED AT LINE 865
-PROG_PARSE_PTR:     103C DEFINED AT LINE 340
-                    > USED AT LINE 687
-                    > USED AT LINE 766
-                    > USED AT LINE 818
-RNG_SEED:           103E DEFINED AT LINE 341
-                    > USED AT LINE 1345
-                    > USED AT LINE 1350
-PROG_BASE:          1040 DEFINED AT LINE 343
-                    > USED AT LINE 1266
-                    > USED AT LINE 1307
-                    > USED AT LINE 1823
-PUTCHAR:            0008 DEFINED AT LINE 377
-PUTCHARWAITLOOP:    000A DEFINED AT LINE 380
-COMPAREJUMP_ENTRY:  0021 DEFINED AT LINE 430
-                    > USED AT LINE 421
-JZPAGE_SKIP:        0025 DEFINED AT LINE 433
-                    > USED AT LINE 431
-EXPAPPLYOP:         0026 DEFINED AT LINE 435
-                    > USED AT LINE 566
-                    > USED AT LINE 581
-COMPAREHLDE:        0028 DEFINED AT LINE 444
-NEGATEDE:           0030 DEFINED AT LINE 463
-EXPEVALUATE:        0038 DEFINED AT LINE 487
-EXPEVALUATENUM:     003F DEFINED AT LINE 500
-                    > USED AT LINE 494
-                    > USED AT LINE 616
-                    > USED AT LINE 644
-EXPINTEGER:         0054 DEFINED AT LINE 532
-EXPVAR:             0058 DEFINED AT LINE 539
-                    > USED AT LINE 524
-EXPVARGETVALUE:     005B DEFINED AT LINE 543
-EXPEVALUATEOP:      005E DEFINED AT LINE 548
-                    > USED AT LINE 606
-                    > USED AT LINE 714
-SKIPEXPAPPLYOP:     006D DEFINED AT LINE 584
-                    > USED AT LINE 560
-EXPNEGATE:          0074 DEFINED AT LINE 601
-                    > USED AT LINE 508
-PRINTSUBSTRING:     0083 DEFINED AT LINE 619
-                    > USED AT LINE 639
-PRINTSUBINTEGER:    0086 DEFINED AT LINE 621
-                    > USED AT LINE 645
-PRINTSUBLOOP:       008A DEFINED AT LINE 625
-                    > USED AT LINE 641
-PRINTSUBIMPL:       008D DEFINED AT LINE 630
-                    > USED AT LINE 1133
-CRLF:               009E DEFINED AT LINE 652
-                    > USED AT LINE 741
-                    > USED AT LINE 756
-                    > USED AT LINE 980
-GETVARLOCATIONBVAR: 00A5 DEFINED AT LINE 659
-                    > USED AT LINE 1136
-                    > USED AT LINE 1179
-GETVARLOCATION:     00AA DEFINED AT LINE 666
-                    > USED AT LINE 542
-OUTPUTSTRINGRET:    00B8 DEFINED AT LINE 692
-                    > USED AT LINE 704
-OUTPUTSTRING:       00B9 DEFINED AT LINE 697
-                    > USED AT LINE 620
-OUTPUTSTRINGLOOP:   00BA DEFINED AT LINE 700
-                    > USED AT LINE 708
-OUTPUTSTRING_WITHQUOTE: 00BE DEFINED AT LINE 705
-                    > USED AT LINE 1032
-EXPLEFTBRACE:       00C1 DEFINED AT LINE 710
-                    > USED AT LINE 506
-FUNCTIONCALL:       00C2 DEFINED AT LINE 712
-                    > USED AT LINE 515
-EXPBRACKETEDB:      00CA DEFINED AT LINE 726
-                    > USED AT LINE 682
-ERROR:              00D3 DEFINED AT LINE 740
-                    > USED AT LINE 495
-                    > USED AT LINE 664
-                    > USED AT LINE 729
-                    > USED AT LINE 809
-                    > USED AT LINE 1143
-                    > USED AT LINE 1161
-                    > USED AT LINE 1171
-                    > USED AT LINE 1281
-                    > USED AT LINE 1492
-                    > USED AT LINE 1897
-READY:              00DD DEFINED AT LINE 749
-                    > USED AT LINE 834
-                    > USED AT LINE 877
-                    > USED AT LINE 1269
-LINESTARTSWITHINT:  00FA DEFINED AT LINE 782
-DELETEPROGRAMLINE:  011B DEFINED AT LINE 830
-                    > USED AT LINE 804
-ENTRY:              012B DEFINED AT LINE 860
-                    > USED AT LINE 828
-MEMORYROTATE:       012F DEFINED AT LINE 867
-REVERSEDH:          0139 DEFINED AT LINE 880
-                    > USED AT LINE 875
-REVERSE:            013C DEFINED AT LINE 885
-                    > USED AT LINE 874
-REVERSELOOP:        013C DEFINED AT LINE 889
-                    > USED AT LINE 903
-POPHASSIGNTOVAR_PREFIX: 014A DEFINED AT LINE 905
-                    > USED AT LINE 1185
-POPHASSIGNTOVAR:    0151 DEFINED AT LINE 916
-                    > USED AT LINE 1147
-LISTLOOP:           0156 DEFINED AT LINE 928
-                    > USED AT LINE 936
-                    > USED AT LINE 1308
-LIST_TOKEN_LOOP:    016E DEFINED AT LINE 956
-                    > USED AT LINE 960
-                    > USED AT LINE 967
-LIST_TOKEN:         0174 DEFINED AT LINE 962
-LIST_TOKEN_STRING_LOOP: 0179 DEFINED AT LINE 969
-                    > USED AT LINE 975
-LIST_LINENUM:       0183 DEFINED AT LINE 979
-                    > USED AT LINE 947
-LIST_INTEGER:       0186 DEFINED AT LINE 982
-                    > USED AT LINE 949
-PRINTINTEGER:       018C DEFINED AT LINE 992
-                    > USED AT LINE 622
-                    > USED AT LINE 745
-PRINTINTEGERLOOP:   0197 DEFINED AT LINE 1004
-                    > USED AT LINE 999
-                    > USED AT LINE 1022
-PRINTINTEGERLOOP2:  01A7 DEFINED AT LINE 1024
-                    > USED AT LINE 1029
-LIST_STRING:        01AC DEFINED AT LINE 1031
-                    > USED AT LINE 945
-LIST_VAR:           01B0 DEFINED AT LINE 1035
-                    > USED AT LINE 951
-TOKENLIST:          01B4 DEFINED AT LINE 1051
-                    > USED AT LINE 940
-                    > USED AT LINE 1759
-LINENUMSUB:         0227 DEFINED AT LINE 1127
-                    > USED AT LINE 816
-                    > USED AT LINE 947
-                    > USED AT LINE 1276
-                    > USED AT LINE 1280
-                    > USED AT LINE 1285
-                    > USED AT LINE 1874
-PRINTSUB:           022A DEFINED AT LINE 1132
-                    > USED AT LINE 613
-                    > USED AT LINE 719
-                    > USED AT LINE 1054
-LETSUB:             022D DEFINED AT LINE 1135
-                    > USED AT LINE 1056
+STACK_INIT:         13F8 DEFINED AT LINE 335
+                    > USED AT LINE 753
+                    > USED AT LINE 1156
+VAR_SPACE:          1000 DEFINED AT LINE 338
+                    > USED AT LINE 678
+PROG_PTR:           1000 DEFINED AT LINE 342
+                    > USED AT LINE 371
+                    > USED AT LINE 757
+                    > USED AT LINE 798
+                    > USED AT LINE 864
+PROG_PARSE_PTR:     103C DEFINED AT LINE 345
+                    > USED AT LINE 691
+                    > USED AT LINE 765
+                    > USED AT LINE 817
+RNG_SEED:           103E DEFINED AT LINE 346
+                    > USED AT LINE 1341
+                    > USED AT LINE 1346
+PROG_BASE:          1040 DEFINED AT LINE 348
+                    > USED AT LINE 1262
+                    > USED AT LINE 1303
+                    > USED AT LINE 1820
+PUTCHAR:            0008 DEFINED AT LINE 382
+PUTCHARWAITLOOP:    000A DEFINED AT LINE 385
+COMPAREJUMP_ENTRY:  0021 DEFINED AT LINE 435
+                    > USED AT LINE 426
+JZPAGE_SKIP:        0025 DEFINED AT LINE 438
+                    > USED AT LINE 436
+EXPAPPLYOP:         0026 DEFINED AT LINE 440
+                    > USED AT LINE 570
+                    > USED AT LINE 585
+COMPAREHLDE:        0028 DEFINED AT LINE 449
+NEGATEDE:           0030 DEFINED AT LINE 468
+EXPEVALUATE:        003B DEFINED AT LINE 486
+                    > USED AT LINE 735
+                    > USED AT LINE 911
+                    > USED AT LINE 1135
+                    > USED AT LINE 1145
                     > USED AT LINE 1189
-GOSUBSUB:           023A DEFINED AT LINE 1149
-                    > USED AT LINE 1060
-GOTOSUB:            023F DEFINED AT LINE 1157
-                    > USED AT LINE 1058
-RETURNSUB:          0247 DEFINED AT LINE 1166
-                    > USED AT LINE 1062
-INPUTSUB:           0251 DEFINED AT LINE 1177
-                    > USED AT LINE 1064
-FORSUB:             025C DEFINED AT LINE 1187
-                    > USED AT LINE 1066
-NEXTSUB:            0262 DEFINED AT LINE 1197
-                    > USED AT LINE 1068
-NEXTSUBLOOP:        027A DEFINED AT LINE 1236
-                    > USED AT LINE 1230
-IFSUB:              0282 DEFINED AT LINE 1246
-                    > USED AT LINE 1070
-EXECUTEPROGRAM:     0289 DEFINED AT LINE 1255
-                    > USED AT LINE 364
-                    > USED AT LINE 1076
-ENDPROGRAM:         028A DEFINED AT LINE 1258
-                    > USED AT LINE 764
-                    > USED AT LINE 777
-                    > USED AT LINE 803
-                    > USED AT LINE 933
-                    > USED AT LINE 1871
-ENDSUB:             028D DEFINED AT LINE 1268
-                    > USED AT LINE 1072
-EXECUTEPROGRAMLOOP: 0290 DEFINED AT LINE 1271
-                    > USED AT LINE 1290
-                    > USED AT LINE 1925
-EXECUTEDIRECT:      0291 DEFINED AT LINE 1274
-                    > USED AT LINE 780
-NEWSUB:             02A1 DEFINED AT LINE 1303
-                    > USED AT LINE 1080
-LISTSUB:            02A2 DEFINED AT LINE 1306
-                    > USED AT LINE 1078
-                    > USED AT LINE 1280
-                    > USED AT LINE 1313
-                    > USED AT LINE 1314
-                    > USED AT LINE 1315
-                    > USED AT LINE 1316
-TOTOKEN:            02A3 DEFINED AT LINE 1313
-                    > USED AT LINE 1095
+                    > USED AT LINE 1243
                     > USED AT LINE 1896
-STEPTOKEN:          02A4 DEFINED AT LINE 1314
-                    > USED AT LINE 1097
-                    > USED AT LINE 1909
-RIGHTBRACETOKEN:    02A5 DEFINED AT LINE 1315
-                    > USED AT LINE 734
-                    > USED AT LINE 1103
-COMMATOKEN:         02A6 DEFINED AT LINE 1316
-                    > USED AT LINE 641
-                    > USED AT LINE 1099
-ABSSUB:             02A8 DEFINED AT LINE 1318
-                    > USED AT LINE 514
-                    > USED AT LINE 1088
-                    > USED AT LINE 1475
-LEFTBRACETOKEN:     02AB DEFINED AT LINE 1330
-                    > USED AT LINE 504
-                    > USED AT LINE 728
-                    > USED AT LINE 1101
-USRSUB:             02AC DEFINED AT LINE 1333
-                    > USED AT LINE 1090
-RNDSUB:             02AE DEFINED AT LINE 1338
-                    > USED AT LINE 511
-                    > USED AT LINE 1092
-OPERATORS:          02C5 DEFINED AT LINE 1393
-                    > USED AT LINE 590
-LTESUB:             02C5 DEFINED AT LINE 1395
-                    > USED AT LINE 1111
-GTESUB:             02C6 DEFINED AT LINE 1398
-                    > USED AT LINE 1109
-GTSUB:              02C9 DEFINED AT LINE 1402
-                    > USED AT LINE 1115
-LTSUB:              02CA DEFINED AT LINE 1405
-                    > USED AT LINE 1113
-EQUALSUB:           02D3 DEFINED AT LINE 1416
-                    > USED AT LINE 1105
-                    > USED AT LINE 1142
-BINRETURN:          02D4 DEFINED AT LINE 1418
-                    > USED AT LINE 1401
-NOTEQUALSUB:        02D6 DEFINED AT LINE 1422
-                    > USED AT LINE 1107
-ADDSUB:             02DD DEFINED AT LINE 1429
-                    > USED AT LINE 1117
-SUBSUB:             02DE DEFINED AT LINE 1431
-                    > USED AT LINE 508
-                    > USED AT LINE 1119
-MULSUB:             02E2 DEFINED AT LINE 1439
-                    > USED AT LINE 566
-                    > USED AT LINE 1121
-                    > USED AT LINE 1347
-MULTIPLY:           02E5 DEFINED AT LINE 1446
-MULLOOP:            02E7 DEFINED AT LINE 1449
-                    > USED AT LINE 1459
-DONTADD:            02EF DEFINED AT LINE 1456
-                    > USED AT LINE 1454
-DIVSUB:             02F6 DEFINED AT LINE 1465
-                    > USED AT LINE 1123
-DIVIDEHL:           02F6 DEFINED AT LINE 1471
-                    > USED AT LINE 1011
-                    > USED AT LINE 1357
-DIVJZERROR:         0301 DEFINED AT LINE 1491
-                    > USED AT LINE 1546
-DIVLOOP:            0304 DEFINED AT LINE 1494
-                    > USED AT LINE 1500
-DIVNORESTORE:       0312 DEFINED AT LINE 1515
-                    > USED AT LINE 1509
-NLTESTTRUE:         031A DEFINED AT LINE 1534
-                    > USED AT LINE 1574
-GETLINE:            0322 DEFINED AT LINE 1552
-                    > USED AT LINE 762
-                    > USED AT LINE 909
-FRESHSTART:         0326 DEFINED AT LINE 1566
-                    > USED AT LINE 1736
-                    > USED AT LINE 1809
-NLTEST:             0329 DEFINED AT LINE 1570
-                    > USED AT LINE 1732
-NEXTCHARLOOP:       032D DEFINED AT LINE 1576
-                    > USED AT LINE 1582
-                    > USED AT LINE 1670
-LOOKUPCLASSLOOP:    033D DEFINED AT LINE 1597
-                    > USED AT LINE 1601
-LC_QUOTETESTTRUE:   0343 DEFINED AT LINE 1602
-                    > USED AT LINE 1596
-DIGITCLASS:         0348 DEFINED AT LINE 1613
-                    > USED AT LINE 1807
-DIGITCLASSEND:      034A DEFINED AT LINE 1617
-WRITE_SHARED_ATSP:  0351 DEFINED AT LINE 1627
-                    > USED AT LINE 1782
-WRITE_SHARED:       0352 DEFINED AT LINE 1629
-                    > USED AT LINE 1757
-WRITE_SHARED_WRITTEN: 0353 DEFINED AT LINE 1631
-                    > USED AT LINE 1801
-NOCHARCLASS:        0355 DEFINED AT LINE 1635
-                    > USED AT LINE 1568
-DIGITCLASSNOTEND:   035A DEFINED AT LINE 1643
-                    > USED AT LINE 1615
-QUOTECLASSEXPEND:   036C DEFINED AT LINE 1672
-                    > USED AT LINE 1545
-                    > USED AT LINE 1736
-QUOTECLASS:         036D DEFINED AT LINE 1686
-                    > USED AT LINE 1803
-LT0CLASS:           0370 DEFINED AT LINE 1701
-                    > USED AT LINE 1808
-COMPCLASS:          0372 DEFINED AT LINE 1706
-                    > USED AT LINE 1806
-ALPHACLASS:         0374 DEFINED AT LINE 1709
-                    > USED AT LINE 1805
-TOKENCLASSEND:      037F DEFINED AT LINE 1738
-LOOKUPTOKEN_LOOP:   038E DEFINED AT LINE 1761
-                    > USED AT LINE 1790
-STRCMP:             0391 DEFINED AT LINE 1765
-                    > USED AT LINE 1773
-LOOKUPTOKEN:        039D DEFINED AT LINE 1786
-                    > USED AT LINE 1791
-CLASSLOOKUP:        03AB DEFINED AT LINE 1804
-                    > USED AT LINE 1589
-GETLINENUM:         03B5 DEFINED AT LINE 1811
-                    > USED AT LINE 797
-                    > USED AT LINE 1159
-GETLINENUMLOOP:     03B8 DEFINED AT LINE 1825
-                    > USED AT LINE 1839
-ATNLN_RETNZ:        03C8 DEFINED AT LINE 1846
+                    > USED AT LINE 1916
+EXPEVALUATENUM:     0042 DEFINED AT LINE 504
+                    > USED AT LINE 498
+                    > USED AT LINE 620
+                    > USED AT LINE 648
+EXPINTEGER:         0057 DEFINED AT LINE 536
+EXPVAR:             005B DEFINED AT LINE 543
+                    > USED AT LINE 528
+EXPVARGETVALUE:     005E DEFINED AT LINE 547
+EXPEVALUATEOP:      0061 DEFINED AT LINE 552
+                    > USED AT LINE 610
+                    > USED AT LINE 718
+SKIPEXPAPPLYOP:     0070 DEFINED AT LINE 588
+                    > USED AT LINE 564
+EXPNEGATE:          0077 DEFINED AT LINE 605
+                    > USED AT LINE 512
+PRINTSUBSTRING:     0086 DEFINED AT LINE 623
+                    > USED AT LINE 643
+PRINTSUBINTEGER:    0089 DEFINED AT LINE 625
+                    > USED AT LINE 649
+PRINTSUBLOOP:       008D DEFINED AT LINE 629
+                    > USED AT LINE 645
+PRINTSUBIMPL:       0090 DEFINED AT LINE 634
+                    > USED AT LINE 1132
+CRLF:               00A1 DEFINED AT LINE 656
+                    > USED AT LINE 755
+                    > USED AT LINE 979
+                    > USED AT LINE 1929
+GETVARLOCATIONBVAR: 00A8 DEFINED AT LINE 663
+                    > USED AT LINE 1166
+                    > USED AT LINE 1180
+GETVARLOCATION:     00AD DEFINED AT LINE 670
+                    > USED AT LINE 546
+OUTPUTSTRINGRET:    00BB DEFINED AT LINE 696
+                    > USED AT LINE 708
+OUTPUTSTRING:       00BC DEFINED AT LINE 701
+                    > USED AT LINE 624
+OUTPUTSTRINGLOOP:   00BD DEFINED AT LINE 704
+                    > USED AT LINE 712
+OUTPUTSTRING_WITHQUOTE: 00C1 DEFINED AT LINE 709
+                    > USED AT LINE 1031
+EXPLEFTBRACE:       00C4 DEFINED AT LINE 714
+                    > USED AT LINE 510
+FUNCTIONCALL:       00C5 DEFINED AT LINE 716
+                    > USED AT LINE 519
+EXPBRACKETEDB:      00CD DEFINED AT LINE 730
+                    > USED AT LINE 686
+READY:              00DB DEFINED AT LINE 748
+                    > USED AT LINE 833
+                    > USED AT LINE 876
+                    > USED AT LINE 1265
+                    > USED AT LINE 1934
+LINESTARTSWITHINT:  00F8 DEFINED AT LINE 781
+DELETEPROGRAMLINE:  0119 DEFINED AT LINE 829
+                    > USED AT LINE 803
+ENTRY:              0129 DEFINED AT LINE 859
+                    > USED AT LINE 827
+MEMORYROTATE:       012D DEFINED AT LINE 866
+REVERSEDH:          0137 DEFINED AT LINE 879
+                    > USED AT LINE 874
+REVERSE:            013A DEFINED AT LINE 884
+                    > USED AT LINE 873
+REVERSELOOP:        013A DEFINED AT LINE 888
+                    > USED AT LINE 902
+POPHASSIGNTOVAR_PREFIX: 0148 DEFINED AT LINE 904
+                    > USED AT LINE 1172
+POPHASSIGNTOVAR:    0151 DEFINED AT LINE 915
+                    > USED AT LINE 1191
+LISTLOOP:           0156 DEFINED AT LINE 927
+                    > USED AT LINE 935
+                    > USED AT LINE 1304
+LIST_TOKEN_LOOP:    016E DEFINED AT LINE 955
+                    > USED AT LINE 959
+                    > USED AT LINE 966
+LIST_TOKEN:         0174 DEFINED AT LINE 961
+LIST_TOKEN_STRING_LOOP: 0179 DEFINED AT LINE 968
+                    > USED AT LINE 974
+LIST_LINENUM:       0183 DEFINED AT LINE 978
+                    > USED AT LINE 946
+LIST_INTEGER:       0186 DEFINED AT LINE 981
+                    > USED AT LINE 948
+PRINTINTEGER:       018C DEFINED AT LINE 991
+                    > USED AT LINE 626
+                    > USED AT LINE 1933
+PRINTINTEGERLOOP:   0197 DEFINED AT LINE 1003
+                    > USED AT LINE 998
+                    > USED AT LINE 1021
+PRINTINTEGERLOOP2:  01A7 DEFINED AT LINE 1023
+                    > USED AT LINE 1028
+LIST_STRING:        01AC DEFINED AT LINE 1030
+                    > USED AT LINE 944
+LIST_VAR:           01B0 DEFINED AT LINE 1034
+                    > USED AT LINE 950
+TOKENLIST:          01B4 DEFINED AT LINE 1050
+                    > USED AT LINE 939
+                    > USED AT LINE 1756
+LINENUMSUB:         0227 DEFINED AT LINE 1126
+                    > USED AT LINE 815
+                    > USED AT LINE 946
+                    > USED AT LINE 1272
+                    > USED AT LINE 1276
+                    > USED AT LINE 1281
                     > USED AT LINE 1871
-ATNLN_STRING:       03CA DEFINED AT LINE 1852
-                    > USED AT LINE 1855
-                    > USED AT LINE 1882
-ATNLN_INT:          03D0 DEFINED AT LINE 1858
-                    > USED AT LINE 843
+PRINTSUB:           022A DEFINED AT LINE 1131
+                    > USED AT LINE 617
+                    > USED AT LINE 723
+                    > USED AT LINE 1053
+GOSUBSUB:           022D DEFINED AT LINE 1134
+                    > USED AT LINE 1059
+GOTOSUB:            0234 DEFINED AT LINE 1144
+                    > USED AT LINE 1057
+RETURNSUB:          023E DEFINED AT LINE 1153
+                    > USED AT LINE 1061
+INPUTSUB:           0248 DEFINED AT LINE 1164
+                    > USED AT LINE 1063
+FORSUB:             0253 DEFINED AT LINE 1174
+                    > USED AT LINE 1065
+LETSUB:             0257 DEFINED AT LINE 1179
+                    > USED AT LINE 1055
+NEXTSUB:            0266 DEFINED AT LINE 1193
+                    > USED AT LINE 1067
+NEXTSUBLOOP:        027E DEFINED AT LINE 1232
+                    > USED AT LINE 1226
+IFSUB:              0286 DEFINED AT LINE 1242
+                    > USED AT LINE 1069
+EXECUTEPROGRAM:     028F DEFINED AT LINE 1251
+                    > USED AT LINE 369
+                    > USED AT LINE 1075
+ENDPROGRAM:         0290 DEFINED AT LINE 1254
+                    > USED AT LINE 763
+                    > USED AT LINE 776
+                    > USED AT LINE 802
+                    > USED AT LINE 932
+                    > USED AT LINE 1868
+ENDSUB:             0293 DEFINED AT LINE 1264
+                    > USED AT LINE 1071
+EXECUTEPROGRAMLOOP: 0296 DEFINED AT LINE 1267
+                    > USED AT LINE 1286
+                    > USED AT LINE 1926
+EXECUTEDIRECT:      0297 DEFINED AT LINE 1270
+                    > USED AT LINE 779
+NEWSUB:             02A7 DEFINED AT LINE 1299
+                    > USED AT LINE 1079
+LISTSUB:            02A8 DEFINED AT LINE 1302
+                    > USED AT LINE 1077
+                    > USED AT LINE 1276
+                    > USED AT LINE 1309
+                    > USED AT LINE 1310
+                    > USED AT LINE 1311
+                    > USED AT LINE 1312
+TOTOKEN:            02A9 DEFINED AT LINE 1309
+                    > USED AT LINE 1094
+                    > USED AT LINE 1893
+STEPTOKEN:          02AA DEFINED AT LINE 1310
+                    > USED AT LINE 1096
+                    > USED AT LINE 1905
+RIGHTBRACETOKEN:    02AB DEFINED AT LINE 1311
+                    > USED AT LINE 738
+                    > USED AT LINE 1102
+COMMATOKEN:         02AC DEFINED AT LINE 1312
+                    > USED AT LINE 645
+                    > USED AT LINE 1098
+ABSSUB:             02AE DEFINED AT LINE 1314
+                    > USED AT LINE 518
+                    > USED AT LINE 1087
+                    > USED AT LINE 1471
+LEFTBRACETOKEN:     02B1 DEFINED AT LINE 1326
+                    > USED AT LINE 508
+                    > USED AT LINE 732
+                    > USED AT LINE 1100
+USRSUB:             02B2 DEFINED AT LINE 1329
+                    > USED AT LINE 1089
+RNDSUB:             02B4 DEFINED AT LINE 1334
+                    > USED AT LINE 515
+                    > USED AT LINE 1091
+OPERATORS:          02CB DEFINED AT LINE 1389
+                    > USED AT LINE 594
+LTESUB:             02CB DEFINED AT LINE 1391
+                    > USED AT LINE 1110
+GTESUB:             02CC DEFINED AT LINE 1394
+                    > USED AT LINE 1108
+GTSUB:              02CF DEFINED AT LINE 1398
+                    > USED AT LINE 1114
+LTSUB:              02D0 DEFINED AT LINE 1401
+                    > USED AT LINE 1112
+EQUALSUB:           02D9 DEFINED AT LINE 1412
+                    > USED AT LINE 1104
+                    > USED AT LINE 1186
+BINRETURN:          02DA DEFINED AT LINE 1414
+                    > USED AT LINE 1397
+NOTEQUALSUB:        02DC DEFINED AT LINE 1418
+                    > USED AT LINE 1106
+ADDSUB:             02E3 DEFINED AT LINE 1425
+                    > USED AT LINE 1116
+SUBSUB:             02E4 DEFINED AT LINE 1427
+                    > USED AT LINE 512
+                    > USED AT LINE 1118
+MULSUB:             02E8 DEFINED AT LINE 1435
+                    > USED AT LINE 570
+                    > USED AT LINE 1120
+                    > USED AT LINE 1343
+MULTIPLY:           02EB DEFINED AT LINE 1442
+MULLOOP:            02ED DEFINED AT LINE 1445
+                    > USED AT LINE 1455
+DONTADD:            02F5 DEFINED AT LINE 1452
+                    > USED AT LINE 1450
+DIVSUB:             02FC DEFINED AT LINE 1461
+                    > USED AT LINE 1122
+DIVIDEHL:           02FC DEFINED AT LINE 1467
+                    > USED AT LINE 1010
+                    > USED AT LINE 1353
+DIVJZERROR:         0307 DEFINED AT LINE 1488
+                    > USED AT LINE 1543
+DIVLOOP:            030A DEFINED AT LINE 1491
+                    > USED AT LINE 1497
+DIVNORESTORE:       0318 DEFINED AT LINE 1512
+                    > USED AT LINE 1506
+NLTESTTRUE:         0320 DEFINED AT LINE 1531
+                    > USED AT LINE 1571
+GETLINE:            0328 DEFINED AT LINE 1549
+                    > USED AT LINE 761
+                    > USED AT LINE 908
+FRESHSTART:         032C DEFINED AT LINE 1563
+                    > USED AT LINE 1733
+                    > USED AT LINE 1806
+NLTEST:             032F DEFINED AT LINE 1567
+                    > USED AT LINE 1729
+NEXTCHARLOOP:       0333 DEFINED AT LINE 1573
+                    > USED AT LINE 1579
+                    > USED AT LINE 1667
+LOOKUPCLASSLOOP:    0343 DEFINED AT LINE 1594
+                    > USED AT LINE 1598
+LC_QUOTETESTTRUE:   0349 DEFINED AT LINE 1599
+                    > USED AT LINE 1593
+DIGITCLASS:         034E DEFINED AT LINE 1610
+                    > USED AT LINE 1804
+DIGITCLASSEND:      0350 DEFINED AT LINE 1614
+WRITE_SHARED_ATSP:  0357 DEFINED AT LINE 1624
+                    > USED AT LINE 1779
+WRITE_SHARED:       0358 DEFINED AT LINE 1626
+                    > USED AT LINE 1754
+WRITE_SHARED_WRITTEN: 0359 DEFINED AT LINE 1628
+                    > USED AT LINE 1798
+NOCHARCLASS:        035B DEFINED AT LINE 1632
+                    > USED AT LINE 1565
+DIGITCLASSNOTEND:   0360 DEFINED AT LINE 1640
+                    > USED AT LINE 1612
+QUOTECLASSEXPEND:   0372 DEFINED AT LINE 1669
+                    > USED AT LINE 1542
+                    > USED AT LINE 1733
+QUOTECLASS:         0373 DEFINED AT LINE 1683
+                    > USED AT LINE 1800
+LT0CLASS:           0376 DEFINED AT LINE 1698
+                    > USED AT LINE 1805
+COMPCLASS:          0378 DEFINED AT LINE 1703
+                    > USED AT LINE 1803
+ALPHACLASS:         037A DEFINED AT LINE 1706
+                    > USED AT LINE 1802
+TOKENCLASSEND:      0385 DEFINED AT LINE 1735
+LOOKUPTOKEN_LOOP:   0394 DEFINED AT LINE 1758
+                    > USED AT LINE 1787
+STRCMP:             0397 DEFINED AT LINE 1762
+                    > USED AT LINE 1770
+LOOKUPTOKEN:        03A3 DEFINED AT LINE 1783
+                    > USED AT LINE 1788
+CLASSLOOKUP:        03B1 DEFINED AT LINE 1801
+                    > USED AT LINE 1586
+GETLINENUM:         03BB DEFINED AT LINE 1808
+                    > USED AT LINE 796
+                    > USED AT LINE 1146
+GETLINENUMLOOP:     03BE DEFINED AT LINE 1822
+                    > USED AT LINE 1836
+ATNLN_RETNZ:        03CE DEFINED AT LINE 1843
+                    > USED AT LINE 1868
+ATNLN_STRING:       03D0 DEFINED AT LINE 1849
+                    > USED AT LINE 1852
+                    > USED AT LINE 1879
+ATNLN_INT:          03D6 DEFINED AT LINE 1855
+                    > USED AT LINE 842
+                    > USED AT LINE 1877
+ATNLN_INXB:         03D7 DEFINED AT LINE 1857
+                    > USED AT LINE 1823
+ADVANCETONEXTLINENUM: 03D8 DEFINED AT LINE 1860
+                    > USED AT LINE 1249
                     > USED AT LINE 1880
-ATNLN_INXB:         03D1 DEFINED AT LINE 1860
-                    > USED AT LINE 1826
-ADVANCETONEXTLINENUM: 03D2 DEFINED AT LINE 1863
-                    > USED AT LINE 1253
-                    > USED AT LINE 1883
-FORSUBIMPL:         03E3 DEFINED AT LINE 1885
-                    > USED AT LINE 1190
-FORWITHSTEP:        03F4 DEFINED AT LINE 1912
-                    > USED AT LINE 1909
+FORSUBIMPL:         03E9 DEFINED AT LINE 1882
+                    > USED AT LINE 1175
+FORWITHSTEP:        03FD DEFINED AT LINE 1914
+                    > USED AT LINE 1907
+ERROR:              040A DEFINED AT LINE 1928
+                    > USED AT LINE 499
+                    > USED AT LINE 668
+                    > USED AT LINE 733
+                    > USED AT LINE 744
+                    > USED AT LINE 808
+                    > USED AT LINE 1148
+                    > USED AT LINE 1158
+                    > USED AT LINE 1187
+                    > USED AT LINE 1277
+                    > USED AT LINE 1489
+                    > USED AT LINE 1894
