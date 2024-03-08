@@ -1138,7 +1138,9 @@ GosubSub:
 	PUSH B
 	PUSH H
 	
-	DB 03eh ; opcode for MVI A to eat next byte
+	DB 011h ; opcode for LXI H to eat 2 bytes
+          ; because ExpEcaluate is on page
+          ; 0, third byte is NOP
 GotoSub:
 	CALL ExpEvaluate
 	CALL GetLineNum
@@ -1898,15 +1900,19 @@ ForSubImpl:
 				 ; T is target
 				 
 	LXI D,1
-	LDAX B
-	
-	RST_CompareJump
-	DB StepToken&0ffh,(ForWithStep&0ffh)-1
+
+  RST_LDAXB_INXB_CPI
+	DB StepToken&0ffh
+  RST_JZPage
+  DB (ForWithStep&0ffh)-1
+
+  DCX B
 
 	DB 21h ; LXI H opcode eats the next 2 bytes
+               ; because ExpEvaluate is on page 0
+               ; the 3rd byte is NOP
 ForWithStep:
 	; we have step token
-	INX B
 	CALL ExpEvaluate
 	
 	POP H
