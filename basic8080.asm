@@ -741,13 +741,8 @@ ExpBracketedB:
 	; fall through
 
 ;Display error code and go back to line entry
-Error:
-	CALL CRLF
-	MVI A,'E'
-	RST_PutChar
-	POP D
-	CALL PrintInteger
-	
+  JMP Error
+
 	; fall through
 	
 Ready:
@@ -1923,4 +1918,11 @@ ForWithStep:
 	PUSH H ; stack contains VL+1,S,-T,LS,EPL
 	
 	JMP ExecuteProgramLoop
-	
+
+Error:
+	CALL CRLF
+	MVI A,'E'
+	RST_PutChar
+	POP D
+	CALL PrintInteger
+	JMP Ready
