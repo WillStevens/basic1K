@@ -2,14 +2,30 @@
 ; 25th Feb 2023
 ; 1K 8080 BASIC
 ;
+; Terminal settings:
+;
+; Assumes that outputting a newline requires
+; CR and LF, and that pressing return on the
+; terminal send CR and LF. 1K BASIC echoes all
+; characters it receives back to the terminal.
+; I believe that these settings are compatible
+; with using a Teletype Model 33 in full duplex
+; mode.
+; 
 ; Post-assembly checklist
 ;
 ; 1. LineNumSub is >= address 223h
-; 2. DivSub is at address 2xxh (i.e. <= 2ffh)
-; 3. Program does not exceed 1k
-; 4. In ClassLookup, check that QuoteClass
-;    has LSB different from othet class subs
+; 2. DivSub is <= address 2ffh
+; 3. DivJzError is at address 3xxh
+; 4. In LineStartsWithInt, the jump to
+;    DeleteProgramLine is on the same
+;    page as DeleteProgramLine
+; 5. Program does not exceed 1k
+; 6. In ClassLookup, check that QuoteClass
+;    has LSB different from othet class routines.
+; 7. Ready is at address 00DE
 ;
+; Development log:
 ; 2023-03-03 About 450 bytes long
 ; 2023-03-08 About 750 bytes long
 ; 2023-03-11 About 840 bytes long
@@ -295,13 +311,17 @@
 ;     to check that this doesn't cause problems
 ; 2024-03-06 Changed IO to support Stefan Tramms
 ;     8080 emulator.
-
+; 2024-03-11 Moved start of RAM back to 0400h
+; 2024-03-12 Changed initialisation so that
+;     spurious char is no longer output on
+;     reset or NEW.
+;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
-; 1K RAM from 1000h-13FFh
+; 1K RAM from 0400h-0800h
 
-RAM_BASE equ 1000h
-RAM_TOP equ 1400h ; 1 more than top byte of RAM
+RAM_BASE equ 0400h
+RAM_TOP equ 0800h ; 1 more than top byte of RAM
 
 ; Token values
 ; 0-31 are variables (0 = @)
@@ -350,21 +370,20 @@ ORG 00h
 	;
 	; But this doesn't fit in 8 bytes.
 	; Instead we find a place in the program
-	; that has LXI B,PROG_BASE, and set SP to that 
-	; address, the POP H from the stack and 
-	; store it in PROG_PTR, then INX SP means
-	; that when we fall through to PutChar,
-	; the RET will jump to Ready
-	; 
-	; (It means that on reset and NEW a char
-	; will be output that depends on the value of
-	; A at the time, but worth it to save several
-	; bytes)
+	; that already has "LXI B,PROG_BASE" and
+	; follow it with "dw Ready" and set SP to that
+	; address, then POP H from
+	; the stack and store it in PROG_PTR, then
+	; RET will jump to Ready.
+	; We must ensure that Ready is at address
+	; 00DE for this to work, because the
+	; sequence DE00 executes SBI 0, which is 
+	; harmless.
 
-	LXI SP,ExecuteProgram+2
+	LXI SP,ExecuteProgram+1
 	POP H
 	SHLD PROG_PTR
-	INX SP
+	RET
 
 .macro RST_PutChar
 RST 1
@@ -377,17 +396,23 @@ ORG 08h
 PutChar:
 	; port 1 is for char I/O
 	OUT 1
+	
+	; Having the wait loop after the character
+	; is output will slow down I/O when running
+	; on hardware, but I can't think of a way
+	; of fitting this into 8 bytes otherwise.
+	
 PutCharWaitLoop: ; address 000ah
-  ; TODO change these fee instructions
+  ; TODO change these few instructions
   ; if targetting hardware
   
   XRA A 
   RET
 
 	;IN 1
-	ANI 040h
-	RZ
-	db 0c3h ; opcode for JMP
+	;ANI 040h
+	;RZ
+	;db 0c3h ; opcode for JMP
 	        ; the following two bytes are 
 	        ; 0ah and 00h, so this jumps to
 	        ; PutCharWaitLoop
@@ -594,7 +619,7 @@ SkipExpApplyOp:
 	INX B
 	
 	; Code shared with ExpNegate
-	; so use a CPI to mop up the initial
+	; so use a CPI to eat the initial
 	; LXI in ExpNegate
 	
 	DB 0feh ; OpCode for CPI to mop up LXI
@@ -746,6 +771,8 @@ Error:
 	
 	; fall through
 	
+	NOP ; we need ready to be at 00DE
+	
 Ready:
 	; Set stack pointer
 	; Do this every time to guard against
@@ -754,6 +781,10 @@ Ready:
 	LXI SP,STACK_INIT
 	
 	CALL CRLF
+	
+	; Use this if no CRLF is needed
+	; and sure that stack can't be wrong
+ReadyNoNewline:
 	
 	LHLD PROG_PTR
 	PUSH H ; push it because we need it after 
@@ -831,7 +862,7 @@ DeleteProgramLine:
 ; 25 bytes
 	POP PSW
 	
-	JNZ Ready		; if line not found, do nothing
+	JNZ ReadyNoNewLine ; line not found, do nothing
 
 	PUSH H
 	PUSH B ; first
@@ -874,7 +905,7 @@ MemoryRotate:
   CNC Reverse
   CALL ReverseDH
   
-  LXI B,Ready
+  LXI B,ReadyNoNewLine
   PUSH B
 
 ReverseDH:
@@ -883,7 +914,7 @@ ReverseDH:
   XTHL
   
 Reverse:
-; HL = last
+; HL = last (i.e 1 after the last byte to swap)
 ; DE = first
 
 ReverseLoop:
@@ -1131,21 +1162,7 @@ LineNumSub:
 	
 PrintSub:
 	JMP PrintSubImpl
-
-LetSub:
-	CALL GetVarLocationBVar
-	PUSH H
 	
-	; Test that we have an equals sign
-	RST_LDAXB_INXB_CPI
-	
-	DB EqualSub&0ffh
-	CNZ Error
-	
-	RST_ExpEvaluate
-	
-	JMP POPHAssignToVar
-
 GosubSub:
 	RST_ExpEvaluate
 	POP H
@@ -1185,36 +1202,49 @@ InputSub:
 	JMP POPHAssignToVar_Prefix
 
 ForSub:
-	; First part is just like let statement
-	CALL LetSub
-	JMP ForSubImpl
-
-	; TODO - perhaps this saves 2 bytes?
-	;LXI H,ForSubImpl
-	;PUSH H
+	LXI H,ForSubImpl
+	PUSH H
 	; fall through to LetSub
+	; First part is just like let statement
+LetSub:
+	CALL GetVarLocationBVar
+	PUSH H
+	
+	; Test that we have an equals sign
+	RST_LDAXB_INXB_CPI
+	
+	DB EqualSub&0ffh
+	CNZ Error
+	
+	RST_ExpEvaluate
+	
+	JMP POPHAssignToVar
 	
 NextSub:
 	POP H ; discard return address
-	; stack contains VL+1,S,-T,LS,EPL
+	; stack contains <SP> VL+1,S,-T,LS,EPL
 	POP H	; get VL+1
+	; stack contains VL+1 <SP> S,-T,LS,EPL
 	MOV D,M
 	DCX H
 	MOV E,M
 	
 	XTHL		; step is in HL, VL is in (SP)
+	; stack contains VL+1 <SP> VL, -T,LS,EPL
 	XCHG		; step is in DE, var value in HL
 	DAD D		; add step onto var
 	XCHG		; result is in DE, step is in HL
 	XTHL		; step is in (SP), VL is in HL
+	; stack contains VL+1 <SP> S, -T,LS,EPL
 	
 	MOV M,E ; put back into VL
 	INX H		; H = VL+1
-	MOV M,D	
+	MOV M,D	; DE now has loop var value (LV)
 	
 	POP PSW ; get step so that hi bit of A has
 					; sign of step
 	POP H		; get -T
+	; stack contains VL+1,S,-T <SP> LS,EPL
 	
 	DAD D 	; HL now has LV-T
 	
@@ -1226,6 +1256,7 @@ NextSub:
 					; is zero then keep looping
 					
 	POP D ; this is LoopStart
+	; stack contains VL+1,S,-T,LS <SP> EPL
 	
 	JM NextSubLoop
 	
@@ -1252,21 +1283,20 @@ IfSub:
 	; If DE zero then fall through to next line
 	JMP AdvanceToNextLineNum 
 
+EndSub:
+	JMP Ready
+	; Hi byte of AdvanceToNextLineNum is 3
+	; which is opcode for INR B : harmless
+EndProgram equ EndSub-1
+
 ExecuteProgram:
-	STC ; skip over JNC Ready in a minute
-	
-EndProgram: ; executes the JNC Ready
-					  ; don't care what happens to BC
-					  ; if we are jumping to Ready
-					  
 	; Point BC to first line
 	; Don't skip over the line number
 	; because we need the constant PROG_BASE
 	; at this location in memory
 	LXI B,PROG_BASE
-
-EndSub:
-	JNC Ready
+	dw Ready ; Ready must correspond to
+	         ; a hatmless instruction sequence
 
 ExecuteProgramLoop:
 	LDAX B
@@ -1482,15 +1512,16 @@ DivideHL:
 	LXI B,0ffffh
 	
 ; Do the test for zero here because we want the
-; JZ to be on page 3
-; TODO - need to move this to earlier in DivSub
-; otherwise something other than the call address
-; is on the stack. (although actually maybe it is useful to have an address within the BASIC program)
+; CZ to be on page 3
+; This means that divide by zero and unterminated
+; string both have tbe same error code, but kt
+; will be obvious to the programmer which is
+; intended
 	MOV A,D
   ORA E
 DivJZError:
-  JZ Error
- 
+  CZ Error
+	
 DivLoop:
 	INX B
 	DAD D
@@ -1561,7 +1592,8 @@ GetLine:
 	PUSH H
 	
 	; A is zero at this point
-	; (needs to be <>10 on fall to NLTest)
+	; (needs to be <>newline character on fall 
+	; through to NLTest)
 
 FreshStart:
 
@@ -1889,22 +1921,25 @@ ForSubImpl:
 	; ForSub, it will be used by NextSub
 	
 	
-	PUSH H ; stack has var addr + 1 (VL+1), EPL
+	PUSH H ; stack contains <SP> VL+1, EPL
 	
+	; check that we have a 'TO' token
 	RST_LDAXB_INXB_CPI
-	
 	DB ToToken&0ffh
 	CNZ Error
 	
 	RST_ExpEvaluate
 	RST_NegateDE
 	
-	PUSH D ; stack contains -T,VL+1, EPL
+	PUSH D ; stack contains <SP> -T,VL+1, EPL
 				 ; T is target
 				 
+	; step is going to be 1 unless we encounter
+	; a STEP token
 	LXI D,1
 	LDAX B
 	
+	; check for optional STEP token
 	RST_CompareJump
 	DB StepToken&0ffh,(ForWithStep&0ffh)-1
 
@@ -1915,12 +1950,15 @@ ForWithStep:
 	RST_ExpEvaluate
 	
 	POP H
-	POP H
-	PUSH B	; stack contains -T,LS,EPL
+	POP H   ; H contains VL+1
+	
+	        ; B contains the start address of the
+	        ; loop
+	PUSH B	; stack contains -T <SP> LS,EPL
 	DCX SP
-	DCX SP
-	PUSH D	; stack contains S,-T,LS,EPL
-	PUSH H ; stack contains VL+1,S,-T,LS,EPL
+	DCX SP  ; stack contains <SP> -T,LS,EPL
+	PUSH D	; stack contains <SP>,S,-T,LS,EPL
+	PUSH H ; stack contains <SP>,VL+1,S,-T,LS,EPL
 	
 	JMP ExecuteProgramLoop
 	
