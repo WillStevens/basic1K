@@ -1,12 +1,13 @@
 ; Will Stevens
 ; 25th Feb 2023
 ; 1K 8080 BASIC
+; GPL v3
 ;
 ; Terminal settings:
 ;
 ; Assumes that outputting a newline requires
 ; CR and LF, and that pressing return on the
-; terminal send CR and LF. 1K BASIC echoes all
+; terminal sends CR and LF. 1K BASIC echoes all
 ; characters it receives back to the terminal.
 ; I believe that these settings are compatible
 ; with using a Teletype Model 33 in full duplex
@@ -22,8 +23,11 @@
 ;    page as DeleteProgramLine
 ; 5. Program does not exceed 1k
 ; 6. In ClassLookup, check that QuoteClass
-;    has LSB different from othet class routines.
+;    has LSBit different from othet class
+;    routines.
 ; 7. Ready is at address 00DE
+; 8. Code before 'Ready:' does not overlap with
+;    'Ready:', Can be seen from the HEX file.
 ;
 ; Development log:
 ; 2023-03-03 About 450 bytes long
@@ -1919,9 +1923,9 @@ ATNLN_INXB:
 	INX B
 	
 AdvanceToNextLineNum:
-; BC is a pointer to somewhere in the program
-; move onto the next line number
-; return with Z set if successful
+; BC is a pointer to somewhere in the program.
+; Move onto the next line number.
+; Return with Z set if successful,
 ; Z clear if fell off end of program
 
 	LDAX B
@@ -1978,7 +1982,8 @@ ForWithStep:
 	POP H   ; H contains VL+1
 	
 	        ; B contains the start address of the
-	        ; loop
+	        ; loop (LS)
+	        
 	PUSH B	; stack contains -T <SP> LS,EPL
 	DCX SP
 	DCX SP  ; stack contains <SP> -T,LS,EPL
