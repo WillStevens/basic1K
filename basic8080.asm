@@ -315,6 +315,22 @@
 ; 2024-03-12 Changed initialisation so that
 ;     spurious char is no longer output on
 ;     reset or NEW.
+; 2024-03-15 Realised during testing that 
+;     ExpEvaluate can sometimes try to return
+;     when stack isn't a return address.
+;     Realised that ExpEvaluate must either
+;     succeed or fail, with no backtrack.
+;     This required substantial changes to
+;     PrintSub, especially a change to how it
+;     knows if it has just had a comma. This
+;     is now done based on parity of H.
+;     To be retested.
+;
+;     Had an idea that operators and statements
+;     could reside on different pages, creating
+;     more space for both, and perhaps removing
+;     the need for some of the Jumps out of
+;     page 2 to statement implementation.
 ;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -517,7 +533,6 @@ ExpEvaluate:
 ; but this call puts hi byte 0 on the stack
 
 	CALL ExpEvaluateNum
-	CNC Error
 	RET
 
 ; ExpEvaluateNum must always be called
@@ -534,16 +549,10 @@ ExpEvaluateNum:
 	
 	; last function
 	CPI (RndSub+1)&0ffh
-	RNC ; if its greater than this, its an error
+	CNC Error
 	; first function
 	CPI AbsSub&0ffh
 	JNC FunctionCall ; between RndSub and AbsSub
-	
-	; can't use RST_CompareJump below
-	; because it doesn't preserve Carry after
-	; comparison.
-	; TODO - this assumption isn't correct - INX H
-	; doesnt affect flags
 	
 	CPI IntegerToken
 	JC ExpVar
@@ -551,7 +560,7 @@ ExpEvaluateNum:
 	; Integer token is one more than last var
 	; token so if carry is set then it is a var
 	
-	RNZ : return with carry clear if error
+	CNZ Error
 
 	; Fall through to ExpInteger
 ExpInteger:
@@ -639,41 +648,54 @@ ExpNegate:
 	PUSH H
 	
 	JMP ExpEvaluateNum 
-
-
-PrintSubString:
-	CALL OutputString ; carry is clear on return
-PrintSubInteger:  ; carry is set on jump to here
-	CC PrintInteger ; carry is clear on return
 	
-	DB 11h ; LXI D eats 2 bytes
 PrintSubLoop:
-	STC
-	INX B
-	POP D ; discard, since we are about to push again
-	
 PrintSubImpl:
-	; First time called, carry is clear
-	; Subsequent times carry is clear unless
-	; last token was a comma
-	PUSH PSW
-	
+	; on call HL is address of PrintSub
+	; so H has odd parity
+	; on subsequent passes H = 0 or QuoteChar
+	; so H has even parity
 	LDAX B
 	
-	RST_CompareJump
-	DB StringToken,(PrintSubString&0ffh)-1
-	RST_CompareJump
-	DB CommaToken,(PrintSubLoop&0ffh)-1
-
-	; must be called from page 0
-	CALL ExpEvaluateNum 
-	JC PrintSubInteger
-	DCX B
+	SUI StringToken
+	RST_JZPage
+	DB (PrintSubString&0ffh)-1
 	
-	; Finished, we want to print a newline unless
-	; last one was a comma
-	POP PSW
-	RC ; return without newline if it was comma
+	; This assumes that LinenumSub is the
+	; next token after StringToken
+	CPI (LastStatement-StringToken+1)&0ffh
+	
+	INR H ; doesn't affect carry
+				; parity will be even if we've just
+				; entered subroutine.
+				; odd otherwise
+	
+	JC PrintSubEnd
+	
+PrintSubExpression:
+	RST_ExpEvaluate
+	CALL PrintInteger
+	
+	db 11h ; opcode for LXI D eats 2 bytes
+				 ; 3rd byte is NOP
+PrintSubString:
+	CALL OutputString ; carry is clear on return
+
+	; A is either Quote char or zero at this point
+	; (00000000 or 00100010) both even parity
+	MOV H,A
+	
+	RST_LDAXB_INXB_CPI
+	DB CommaToken
+	RST_JZPage
+	DB (PrintSubLoop&0ffh)-1
+	
+	DCX B
+	DCR H ; make sure that newline is printed when
+				; we fall through, parity will be even
+PrintSubEnd:
+	RPO   ; don't print newline if we've just had
+				; comma
 CRLF:
 	MVI A,13
 	RST_PutChar
@@ -771,8 +793,8 @@ Error:
 	
 	; fall through
 	
-	NOP ; we need ready to be at 00DE
-	
+	; we need ready to be at 00DE
+org 00deh
 Ready:
 	; Set stack pointer
 	; Do this every time to guard against
@@ -1054,7 +1076,7 @@ PrintIntegerLoop:
 	
 PrintIntegerLoop2:
 	POP PSW
-	RZ
+	RZ ; Z is set on return, HL<=0
 	RST_PutChar
 	RST_JZPage
 	db (PrintIntegerLoop2&0ffh)-1
@@ -1176,10 +1198,7 @@ GotoSub:
 	CALL GetLineNum
 	RZ
 	CALL Error
-	; TODO in place of call error, is there
-	; a two or three byte inst that will
-	; cause C to be set when DAD SP is called below?
-	
+
 ReturnSub:
 	; Expect stack size to be 6 or more
 	; any less and we have return without gosub
@@ -1306,8 +1325,8 @@ ExecuteDirect:
 	SUI LineNumSub&0ffh
 	
 	; Check that it is a token between
-	; LinenumSub and ListSub
-	CPI (ListSub-LineNumSub+1)&0ffh
+	; LinenumSub and LastStatement
+	CPI (LastStatement-LineNumSub+1)&0ffh
 	CNC Error
 	
 	INX B
@@ -1332,7 +1351,8 @@ ExecuteDirect:
 
 NewSub:
 	RST 0
-	
+
+LastStatement:
 ListSub:
 	LXI B,PROG_BASE
   JMP ListLoop
@@ -1442,7 +1462,7 @@ LTSub:
 	XRA D
 	RAL
   
-  DB 3eh ; MVI A opcode to swallow next byte
+  DB 3eh ; MVI A opcode to eat next byte
 EqualSub:
 	RST_CompareHLDE ; returns Z iff HL=DE
 BinReturn:
@@ -1776,9 +1796,12 @@ TokenClassEnd:
 	
 	; it's a var if bits 7,6,5 are 010 and
   ; E=-2
-  ; TODO These aren't the only conditions that 
+  ; These aren't the only conditions that 
   ; could lead to the test below passing - 
-  ; e.g. if 7,6,5=001 and E=10011110.
+  ; e.g. if 7,6,5=001 and E=10011110. But E
+  ; has to be large for this to happen, so
+  ; quite unlikely in practice.
+  
 	MOV A,M
 	XRI 040h
 	MOV D,A
@@ -1841,7 +1864,10 @@ DB 33,LT0Class&0ffh
 DB 0,FreshStart&0ffh
 
 GetLineNum:
-	; Line number is in DE, look it up in the program and set BC to the line num token
+	; Line number is in DE, look it up in the 
+	; program and set BC to point to the LinenumSub
+	; token.
+	;
 	; DE is preserved
 	; H is preserved
 	; L is not preserved
@@ -1920,7 +1946,6 @@ ForSubImpl:
 	; Keep it there even though it isn't used by 
 	; ForSub, it will be used by NextSub
 	
-	
 	PUSH H ; stack contains <SP> VL+1, EPL
 	
 	; check that we have a 'TO' token
@@ -1958,7 +1983,7 @@ ForWithStep:
 	DCX SP
 	DCX SP  ; stack contains <SP> -T,LS,EPL
 	PUSH D	; stack contains <SP>,S,-T,LS,EPL
-	PUSH H ; stack contains <SP>,VL+1,S,-T,LS,EPL
+	PUSH H  ; stack contains <SP>,VL+1,S,-T,LS,EPL
 	
 	JMP ExecuteProgramLoop
 	
