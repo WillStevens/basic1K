@@ -20,6 +20,8 @@ E171 - expecting variable name, but no
 E208 - expecting left bracket
 E272 - attempt to overwrite line. A line
        must be deleted and reentered.
+E571 - line number not found in GOTO or GOSUB
+E578 - RETURN without GOSUB
 E605 - expecting = sign in LET or FOR
        statement
 E664 - syntax error (often caused by
