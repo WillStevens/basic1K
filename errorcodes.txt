@@ -1,0 +1,28 @@
+This file lists the meaning of each
+error code that 1K Tiny BASIC can produce.
+
+Because error codes are not constant
+across 1K Tiny BASIC versions, this list
+needs to be updated whenever there is
+a significant code cbange. It is possible
+that this list will be out-of-sync with 
+the source code if I do not have time to
+update it, but for all releases, it will
+be up to date.
+
+Error codes as of 16th March 2023:
+
+E85 - expecting an expression, but
+      expression not found or incomplete.
+E171 - expecting variable name, but no
+       variable name found.
+E272 - attempt to overwrite line. A line
+       must be deleted and reentered.
+E605 - expecting = sign in LET or FOR
+       statement
+E664 - syntax error (often caused by
+       misspelt statement), or unexpected
+       token encountered when expecting
+       statement
+E1001 - expecting TO in FOR statement but
+        TO not found
