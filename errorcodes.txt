@@ -12,10 +12,12 @@ be up to date.
 
 Error codes as of 16th March 2023:
 
-E85 - expecting an expression, but
+
+E72 & E85 - expecting an expression, but
       expression not found or incomplete.
 E171 - expecting variable name, but no
        variable name found.
+E208 - expecting left bracket
 E272 - attempt to overwrite line. A line
        must be deleted and reentered.
 E605 - expecting = sign in LET or FOR
@@ -24,5 +26,9 @@ E664 - syntax error (often caused by
        misspelt statement), or unexpected
        token encountered when expecting
        statement
+E683
+E686
+E772 - missing " at end of string, or
+       divide by zero
 E1001 - expecting TO in FOR statement but
         TO not found
