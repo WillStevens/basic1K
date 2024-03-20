@@ -1,8 +1,8 @@
 100 PRINT "Mandelbrot – based on Gordon Henderson's program."
 105 PRINT "Uses 16-bit Integers"
 140 LET F=50
-150 FOR Y = -12 TO 12
-160 FOR X = -49 TO 29
+150 FOR X = -49 TO 29
+160 FOR Y = -12 TO 12
 170 LET C=X*229/100
 180 LET D=Y*416/100
 190 LET A=C LET B=D LET I=0
@@ -19,6 +19,7 @@
 300 PRINT
 310 NEXT
 330 PRINT "Finished"
+340 END
 1000 IF I<10 PRINT I,
 1010 IF I=10 PRINT "A",
 1020 IF I=11 PRINT "B",
