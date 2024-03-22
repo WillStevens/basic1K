@@ -1,8 +1,8 @@
-0 PRINT "Eratosthenes Sieve Prime Number"
-1 PRINT "       Program in BASIC"
-2 PRINT "Size must be <= free RAM bytes / 2"
-3 PRINT "Size?"
-5 INPUT S LET C = 0
+1 PRINT "Eratosthenes Sieve Prime Number Program"
+2 PRINT "Count primes <= Limit"
+3 PRINT "Limit must be <= free RAM bytes"
+4 PRINT "Limit?",
+5 INPUT L LET S = (L-3) / 2 LET C = 0
 6 FOR I = 0 TO S
 7 LET @(I) = 1
 8 NEXT
@@ -16,4 +16,4 @@
 16 GOTO 13
 17 LET C = C + 1
 18 NEXT
-19 PRINT C," PRIMES"
+19 PRINT 1+C," primes <= ",L
