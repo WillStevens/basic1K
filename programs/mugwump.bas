@@ -1,6 +1,5 @@
 1 LET G=RND(10)
 2 LET H=RND(10)
-3 PRINT G," ",H
 9 LET M=0
 10 PRINT "Where is the mugwump? Enter column then row."
 11 INPUT X
