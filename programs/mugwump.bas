@@ -1,11 +1,5 @@
-1 PRINT "Think of a number."
-2 INPUT R
-3 IF R<0 LET R=0
-4 IF R>4095 LET R=4095
-5 GOSUB 200
-6 LET G=R-(R/10*10)
-7 GOSUB 200
-8 LET H=R-(R/10*10)
+6 LET G=RND(10)
+8 LET H=RND(10)
 9 LET M=0
 10 PRINT "Where is the mugwump? Enter column then row."
 11 INPUT X
@@ -33,6 +27,3 @@
 60 IF C<0 LET C=-C
 61 LET D=D+C
 62 RETURN
-200 LET R=5*R+35
-201 LET R=R-R/4096*4096
-202 RETURN
