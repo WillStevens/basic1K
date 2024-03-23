@@ -335,7 +335,15 @@
 ;     more space for both, and perhaps removing
 ;     the need for some of the Jumps out of
 ;     page 2 to statement implementation.
-;
+;2024-03-23 Comment above won't be acted upon
+;     before version 1.0.
+;     Changed INPUT so that it doesn't display
+;     a prompt. It was confusing to have the
+;     > prompt as is used in direct mode. Instead
+;     programs that need a prompt before input
+;     can use the multistatement line
+;     PRINT "?", INPUT A
+; 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
 ; 1K RAM from 0400h-0800h
@@ -963,7 +971,7 @@ POPHAssignToVar_Prefix:
 
 	PUSH H
 	
-	CALL GetLine
+	CALL GetLineNoPrompt
 
   POP B
   RST_ExpEvaluate
@@ -1607,12 +1615,14 @@ NLTestTrue:
 GetLine:
 	; HL points where we want the line to be
 	; parsed to.
-	; On return HL points to byte adter what we've 
+	; On return HL points to byte after what we've 
 	; got.
 	
 	MVI A,'>'
 	RST_PutChar
-	
+
+GetLineNoPrompt:
+
 	PUSH H
 	
 	; A is zero at this point
