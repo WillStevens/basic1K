@@ -2,8 +2,8 @@
 2 LET H=RND(10)
 9 LET M=0
 10 PRINT "Where is the mugwump? Enter column then row."
-11 INPUT X
-12 INPUT Y
+11 PRINT "Column?", INPUT X
+12 PRINT "Row?", INPUT Y
 13 IF X>=0 IF X<=9 IF Y>=0 IF Y<=9 GOTO 20
 14 PRINT "That location is off the grid!"
 15 GOTO 10
