@@ -335,15 +335,21 @@
 ;     more space for both, and perhaps removing
 ;     the need for some of the Jumps out of
 ;     page 2 to statement implementation.
-;2024-03-23 Comment above won't be acted upon
-;     before version 1.0.
+;2024-03-23 
 ;     Changed INPUT so that it doesn't display
 ;     a prompt. It was confusing to have the
 ;     > prompt as is used in direct mode. Instead
 ;     programs that need a prompt before input
 ;     can use the multistatement line
 ;     PRINT "?", INPUT A
-; 
+; 2024-03-25 Found a fix for problem where
+;     -32768/2 has wrong sign. It costs 3 bytes
+;     so need to find 2 byte saving before Ready
+;     and 1 byte saving after Ready
+; 2024-03-26 In the process of making major
+;     rearrangements to save several bytes and 
+;     fix the bug mentioned above.
+
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
 ; 1K RAM from 0400h-0800h
@@ -539,16 +545,10 @@ ORG 38h
 
 ExpEvaluate:
 
-; This puts a marker on the stack to
-; detect when there are operators on the
-; stack - operators all have 2 as the hi byte
-; but this call puts hi byte 0 on the stack
+; ExpEvaluate must not be called
+; from page 1, The hi byte of the return address
+; is a marker to distinguish it from an operator
 
-	CALL ExpEvaluateNum
-	RET
-
-; ExpEvaluateNum must always be called
-; from page 0
 ExpEvaluateNum:
 	; Expecting ( var integer or - sign
 	; or function call
@@ -598,18 +598,22 @@ ExpEvaluateOp:
 	;Are there operators on the stack?
 	POP H
 	
-	; H will be 0 if no operators on
+	; H will be 2 or 3 if no operators on
 	; stack (i.e. high byte of return address)
 	
 	MOV A,H
-	RST_CompareJump
-	DB 0,(SkipExpApplyOp&0ffh)-1
+	DCR A
+	JNZ SkipExpApplyOp
 	
 	; if L is equal to MulSub then apply it.
 	; this gives * same precedence as /
+	;MOV A,L
+	;RST_CompareJump
+	;DB (MulSub&0ffh),(ExpApplyOp&0ffh)-1
+	
 	MOV A,L
-	RST_CompareJump
-	DB (MulSub&0ffh),(ExpApplyOp&0ffh)-1
+	CPI NegateSub&0ffh
+	JNC ExpApplyOp
 	
 	LDAX B
 	
@@ -640,80 +644,74 @@ SkipExpApplyOp:
 	INX B
 	
 	; Code shared with ExpNegate
-	; so use a CPI to eat the initial
-	; LXI in ExpNegate
-	
-	DB 0feh ; OpCode for CPI to mop up LXI
+	DB 021h ; OpCode for LXI H to mop up 
+					; INR A and LXI
 ExpNegate:
-	; Put 0 onto stack and - onto
-	; operator stack
+	INR A
 	LXI D,0
 	
 	LXI H,ExpEvaluateOp ; address to return to
 											; after operator is called
 	PUSH H
 	
-	PUSH D							; operand
+	; Put 0 onto stack and operator onto
+	; operator stack
+	
+	PUSH D							; 0 operand
 
-	MOV L,A							; operator address
-	MVI H,PrintSub/256
+	MOV L,A
+	MVI H,AddSub/256
 	PUSH H
 	
 	JMP ExpEvaluateNum 
+
+ForSubImpl:
+	; Stack contains return address:
+	; ExecuteProgramLoop - EPL
+	; Keep it there even though it isn't used by 
+	; ForSub, it will be used by NextSub
 	
-PrintSubLoop:
-PrintSubImpl:
-	; on call HL is address of PrintSub
-	; so H has odd parity
-	; on subsequent passes H = 0 or QuoteChar
-	; so H has even parity
+	PUSH H ; stack contains <SP> VL+1, EPL
+	
+	; check that we have a 'TO' token
+	RST_LDAXB_INXB_CPI
+	DB ToToken&0ffh
+	CNZ Error
+	
+	RST_ExpEvaluate
+	RST_NegateDE
+	
+	PUSH D ; stack contains <SP> -T,VL+1, EPL
+				 ; T is target
+				 
+	; step is going to be 1 unless we encounter
+	; a STEP token
+	LXI D,1
 	LDAX B
 	
-	SUI StringToken
-	RST_JZPage
-	DB (PrintSubString&0ffh)-1
-	
-	; This assumes that LinenumSub is the
-	; next token after StringToken
-	CPI (LastStatement-StringToken+1)&0ffh
-	
-	INR H ; doesn't affect carry
-				; parity will be even if we've just
-				; entered subroutine.
-				; odd otherwise
-	
-	JC PrintSubEnd
-	
-PrintSubExpression:
-	RST_ExpEvaluate
-	CALL PrintInteger
-	
-	db 11h ; opcode for LXI D eats 2 bytes
-				 ; 3rd byte is NOP
-PrintSubString:
-	CALL OutputString ; carry is clear on return
+	; check for optional STEP token
+	RST_CompareJump
+	DB StepToken&0ffh,(ForWithStep&0ffh)-1
 
-	; A is either Quote char or zero at this point
-	; (00000000 or 00100010) both even parity
-	MOV H,A
+	DB 21h ; LXI H opcode eats the next 2 bytes
+ForWithStep:
+	; we have step token
+	INX B
+	RST_ExpEvaluate
 	
-	RST_LDAXB_INXB_CPI
-	DB CommaToken
-	RST_JZPage
-	DB (PrintSubLoop&0ffh)-1
+	POP H
+	POP H   ; H contains VL+1
 	
-	DCX B
-	DCR H ; make sure that newline is printed when
-				; we fall through, parity will be even
-PrintSubEnd:
-	RPO   ; don't print newline if we've just had
-				; comma
-CRLF:
-	MVI A,13
-	RST_PutChar
-	MVI A,10
-	RST_PutChar
-	RET
+	        ; B contains the start address of the
+	        ; loop (LS)
+	        
+	PUSH B	; stack contains -T <SP> LS,EPL
+	DCX SP
+	DCX SP  ; stack contains <SP> -T,LS,EPL
+	PUSH D	; stack contains <SP>,S,-T,LS,EPL
+	PUSH H  ; stack contains <SP>,VL+1,S,-T,LS,EPL
+	
+	JMP ExecuteProgramLoop
 
 GetVarLocationBVar:
   RST_LDAXB_INXB_CPI
@@ -967,28 +965,82 @@ ReverseLoop:
 	
 	JMP ReverseLoop
 
-POPHAssignToVar_Prefix:
+GetLineNum:
+	; Line number is in DE, look it up in the 
+	; program and set BC to point to the LinenumSub
+	; token.
+	;
+	; DE is preserved
+	; H is preserved
+	; L is not preserved
+	; 
+	; return with Z set if successful
+	;
+	; Z clear if not successful, and BC points
+	; to the first byte of the line with number
+	; greater than the request
+	
+	LXI B,PROG_BASE-1 ; 1 bytes before PROG_BASE
 
-	PUSH H
+GetLineNumLoop:
+	CALL ATNLN_INXB ; has one INX B preceeding
+	RNZ
 	
-	CALL GetLineNoPrompt
+	INX B
+	
+	; Test for DE <= (BC), and return if true
+	LDAX B
+	INX B
+	SUB E
+	MOV L,A
+	LDAX B
+	SBB D ; C set if DE > (BC), and Z not set
+				; C clear if DE <= (BC)
+	JC GetLineNumLoop
+	
+	DCX B
+	DCX B
+	; Now we want Z set if DE=(BC), clear
+	; otherwise 
+	
+ATNLN_RetNZ: ; shared code. Returns NZ if we know
+						 ; that A is non-zero
+	ORA L
+	
+	RET
 
-  POP B
-  RST_ExpEvaluate
-  POP B
-  
-	; fall through
-POPHAssignToVar:
+ATNLN_String:
+	RST_LDAXB_INXB_CPI
+	DB StringToken
+	JNZ ATNLN_String
+	
+	DB 0c2h ; opcode for JNZ eats 2 bytes
+ATNLN_Int: ; Z is always set when we reach here
+	INX B
+ATNLN_INXB:
+	INX B
+	
+AdvanceToNextLineNum:
+; BC is a pointer to somewhere in the program.
+; Move onto the next line number.
+; Return with Z set if successful,
+; Z clear if fell off end of program
 
-	POP H
+	LDAX B
+	RST_CompareJump
+	DB EndProgram&0ffh,(ATNLN_RetNZ&0ffh)-1
+	; fell off end of program
 	
-	; Put DE into var (HL)
+	CPI LinenumSub&0ffh
+	RZ
 	
-	MOV M,E
-	INX H
-	MOV M,D
+	INX B
 	
-	RET 
+	RST_CompareJump
+	DB IntegerToken,(ATNLN_Int&0ffh)-1
+	RST_CompareJump
+	DB StringToken,(ATNLN_String&0ffh)-1
+	JMP AdvanceToNextLineNum
 
 ListLoop:
 	MVI A,' '
@@ -1103,99 +1155,208 @@ List_Var:
   RET ; byte before TokenList must have high bit set
   
 
-; Index to subroutine address must not overlap with other tokens
-; Currently TokenList starts toward the end
-; of page 1, and DivSub begins towards the end
-; of page 2 and the subroutine extends into page 3
 
-; order in this list must make sure that a
-; token A that is a left substring of another
-; token B appears later in the list than B
-; e.g. < is after <=
+org 01cdh
+; Token values >= this are all operators
+Operators:
 	
-TokenList:
-	DB QuestionMarkToken&0ffh
-	DB '?'+128
-	DB PrintSub&0ffh
-	DB "PRIN",'T'+128
-	DB LetSub&0ffh
-	DB "LE",'T'+128
-	DB GotoSub&0ffh
-	DB "GOT",'O'+128
-	DB GosubSub&0ffh
-	DB "GOSU",'B'+128
-	DB ReturnSub&0ffh
-	DB "RETUR",'N'+128
-	DB InputSub&0ffh
-	DB "INPU",'T'+128
-	DB ForSub&0ffh
-	DB "FO",'R'+128
-	DB NextSub&0ffh
-	DB "NEX",'T'+128
-  DB IfSub&0ffh
-	DB "I",'F'+128
-	DB EndSub&0ffh
-	DB "EN",'D'+128
+LTESub:
+	; Swap operands and fall through
+	XCHG
+GTESub:
+	RST_CompareHLDE
+	RST_JZPage
+	DB (BinReturn&0ffh)-1
+GTSub:
+	; Swap operands and fall through
+	XCHG
+LTSub:
+	MOV A,L
+	SUB E
+	MOV A,H
+	SBB D
+	RAR
+	XRA H
+	XRA D
+	RAL
+  
+  DB 3eh ; MVI A opcode to eat next byte
+EqualSub:
+	RST_CompareHLDE ; returns Z iff HL=DE
+BinReturn:
+	CMC
+	DB 3eh ; MVI A opcode to swallow next byte
 	
-; Before this are keywords allowed at run-time
-  DB ExecuteProgram&0ffh
-	DB "RU",'N'+128
-	DB ListSub&0ffh
-	DB "LIS",'T'+128
-	DB NewSub&0ffh
-	DB "NE",'W'+128
+NotEqualSub:
+	RST_CompareHLDE; returns Z iff HL=DE
+	LXI D,1
+	RNC
+	DCX D
+	RET
+  
+AddSub:
+	DB 3eh	; opcode for JNC, to eat next 2 bytes
+					; (since carry is set when we reach
+					; AddSub)
+SubSub:
+	NOP
+NegateSub:	; This exists so that it can be equal 
+						; in precedence to * and /
+	RST_NegateDE
+	;Add DE to HL and keep in DE
+	DAD D
+	XCHG
 	
-	
-	
-; before operators are non-statement
-; non-operator tokens
+	RET
 
-	DB AbsSub&0ffh
-	DB "AB",'S'+128
-	DB UsrSub&0ffh
-	DB "US",'R'+128
-	DB RndSub&0ffh
-	DB "RN",'D'+128
+MulSub:
+; 20 bytes
+; multiple HL and DE into DE, preserving B
+	PUSH B
+	MOV B,H
+	MOV C,L
+
+Multiply:
+;multiply BC and DE into DE
+	MVI A,16
+MulLoop:
+	DAD H
+	XCHG
+	DAD H
+	XCHG
+	JNC DontAdd
+	DAD B
+DontAdd:
+
+	DCR A
+	JNZ MulLoop
 	
-	DB ToToken&0ffh
-	DB "T",'O'+128
-	DB StepToken&0ffh
-	DB "STE",'P'+128
-	DB CommaToken
-	DB ','+128
-	DB LeftBraceToken&0ffh
-	DB '('+128
-  DB RightBraceToken&0ffh
-	DB ')'+128
-	DB EqualSub&0ffh
-	DB '='+128
-	DB NotEqualSub&0ffh
-	DB "<",'>'+128
-	DB GTESub&0ffh
-	DB ">",'='+128
-	DB LTESub&0ffh
-	DB "<",'='+128
-	DB LTSub&0ffh
-	DB '<'+128
-	DB GTSub&0ffh
-	DB '>'+128
-	DB AddSub&0ffh
-	DB '+'+128
-	DB SubSub&0ffh
-	DB '-'+128
-	DB MulSub&0ffh
-	DB '*'+128
-	DB DivSub&0ffh
-	DB '/'+128
-	DB 255 ; 255 can only occur at the end
+	XCHG
+	POP B
+	RET
 	
+DivSub:
+; 31 bytes
+;Divide HL by DE
+;Remainder in HL 
+;Result in DE
+
+DivideHL:
+;Divide HL by DE
+	; Make HL and DE different signs
+  MOV A,H
+  CALL AbsSub
+	PUSH PSW
+	
+;Divide HL by DE
+;Assuming that HL and DE are different signs
+
+	PUSH B
+	LXI B,0ffffh
+	
+; Do the test for zero here because we want the
+; CZ to be on page 3
+; This means that divide by zero and unterminated
+; string both have tbe same error code, but kt
+; will be obvious to the programmer which is
+; intended
+	MOV A,D
+  ORA E
+DivJZError:
+  CZ Error
+	
+DivLoop:
+	INX B
+	DAD D
+	RAR   ; look for mismatch between carry and
+				; bit 7 of D to detect overflow/underflow
+	XRA D
+	JP DivLoop
+
+	; if HL is zero then it must have been a negative number originally, and the remainder is zero, so don't make any change to HL, but increment quotient by 1
+	
+	MOV A,H
+	ORA L
+	RST_JZPage ; assume it is on same page
+						 ; because DivSub will
+						 ; be right at end of page 2
+	DB (DivNoRestore&0ffh)-1
+	
+ 	RST_NegateDE
+ 	DAD D
+	DCX B
+	
+DivNoRestore:
+	INX B
+	MOV D,B
+	MOV E,C
+	
+	POP B
+	
+	POP PSW
+	RP
+	RST_NegateDE
+	
+	RET
+
 LineNumSub:
 	INX B
 	INX B
 	RET
 	
 PrintSub:
-	JMP PrintSubImpl
+PrintSubLoop:
+	; on call HL is address of PrintSub
+	; so H has odd parity
+	; on subsequent passes H = 0 or QuoteChar
+	; so H has even parity
+	LDAX B
+	
+	SUI StringToken
+	RST_JZPage
+	DB (PrintSubString&0ffh)-1
+	
+	; This assumes that LinenumSub is the
+	; next token after StringToken
+	CPI (LastStatement-StringToken+1)&0ffh
+	
+	INR H ; doesn't affect carry
+				; parity will be even if we've just
+				; entered subroutine.
+				; odd otherwise
+	
+	JC PrintSubEnd
+	
+PrintSubExpression:
+	RST_ExpEvaluate
+	CALL PrintInteger
+	
+	db 11h ; opcode for LXI D eats 2 bytes
+				 ; 3rd byte is NOP
+PrintSubString:
+	CALL OutputString ; carry is clear on return
+
+	; A is either Quote char or zero at this point
+	; (00000000 or 00100010) both even parity
+	MOV H,A
+	
+	RST_LDAXB_INXB_CPI
+	DB CommaToken
+	RST_JZPage
+	DB (PrintSubLoop&0ffh)-1
+	
+	DCX B
+	DCR H ; make sure that newline is printed when
+				; we fall through, parity will be even
+PrintSubEnd:
+	RPO   ; don't print newline if we've just had
+				; comma
+CRLF:
+	MVI A,13
+	RST_PutChar
+	MVI A,10
+	RST_PutChar
+	RET
 	
 GosubSub:
 	RST_ExpEvaluate
@@ -1230,13 +1391,35 @@ InputSub:
   LXI H,INPUT_BUFFER
   PUSH B
 	
-	JMP POPHAssignToVar_Prefix
+POPHAssignToVar_Prefix:
+
+	PUSH H
+	
+	CALL GetLineNoPrompt
+
+  POP B
+  RST_ExpEvaluate
+  POP B
+  
+	; fall through
+POPHAssignToVar:
+
+	POP H
+	
+	; Put DE into var (HL)
+	
+	MOV M,E
+	INX H
+	MOV M,D
+	
+	RET 
 
 ForSub:
 	LXI H,ForSubImpl
 	PUSH H
-	; fall through to LetSub
-	; First part is just like let statement
+	
+	; fall through
+	
 LetSub:
 	CALL GetVarLocationBVar
 	PUSH H
@@ -1319,7 +1502,7 @@ EndSub:
 	; Hi byte of AdvanceToNextLineNum is 3
 	; which is opcode for INR B : harmless
 EndProgram equ EndSub-1
-
+	
 ExecuteProgram:
 	; Point BC to first line
 	; Don't skip over the line number
@@ -1420,174 +1603,91 @@ RndSub:
   XCHG
   RET
 
-; XORSHIFT taken from here
-; https://wikiti.brandonw.net/index.php?title=Z80_Routines:Math:Random
-	;LHLD RNG_SEED
-	;MOV A,H
-  ;RAR
-  ;MOV A,L
-  ;RAR
-  ;XRA H
-  ;MOV H,A
-  ;MOV A,L
-  ;RAR
-  ;MOV A,H
-  ;RAR
-  ;XRA L
-  ;MOV L,A
-  ;XRA H ; clears carry
-  ;MOV H,A
-  ;SHLD RNG_SEED
-  
-  ; carry is clear at this point
-  ;RAR
-  ;MOV H,A
-  
-  ; above 2 bytes give us a value between
-  ; 0 and 32767
-  
-  ;CALL DivideHL
-  ;XCHG
-  ;RET
 
+; Index to subroutine address must not overlap with other tokens
+; Currently TokenList starts toward the end
+; of page 1, and DivSub begins towards the end
+; of page 2 and the subroutine extends into page 3
 
-; Token values >= this are all operators
-Operators:
+; order in this list must make sure that a
+; token A that is a left substring of another
+; token B appears later in the list than B
+; e.g. < is after <=
 	
-LTESub:
-	; Swap operands and fall through
-	XCHG
-GTESub:
-	RST_CompareHLDE
-	RST_JZPage
-	DB (BinReturn&0ffh)-1
-GTSub:
-	; Swap operands and fall through
-	XCHG
-LTSub:
-	MOV A,L
-	SUB E
-	MOV A,H
-	SBB D
-	RAR
-	XRA H
-	XRA D
-	RAL
-  
-  DB 3eh ; MVI A opcode to eat next byte
-EqualSub:
-	RST_CompareHLDE ; returns Z iff HL=DE
-BinReturn:
-	CMC
-	DB 3eh ; MVI A opcode to swallow next byte
+TokenList:
+	DB QuestionMarkToken&0ffh
+	DB '?'+128
+	DB PrintSub&0ffh
+	DB "PRIN",'T'+128
+	DB LetSub&0ffh
+	DB "LE",'T'+128
+	DB GotoSub&0ffh
+	DB "GOT",'O'+128
+	DB GosubSub&0ffh
+	DB "GOSU",'B'+128
+	DB ReturnSub&0ffh
+	DB "RETUR",'N'+128
+	DB InputSub&0ffh
+	DB "INPU",'T'+128
+	DB ForSub&0ffh
+	DB "FO",'R'+128
+	DB NextSub&0ffh
+	DB "NEX",'T'+128
+  DB IfSub&0ffh
+	DB "I",'F'+128
+	DB EndSub&0ffh
+	DB "EN",'D'+128
 	
-NotEqualSub:
-	RST_CompareHLDE; returns Z iff HL=DE
-	LXI D,1
-	RNC
-	DCX D
-	RET
-  
-AddSub:
-	DB 3eh	; opcode for MVI A, to eat next byte
-SubSub:
-	RST_NegateDE
-	;Add DE to HL and keep in DE
-	DAD D
-	XCHG
+; Before this are keywords allowed at run-time
+  DB ExecuteProgram&0ffh
+	DB "RU",'N'+128
+	DB ListSub&0ffh
+	DB "LIS",'T'+128
+	DB NewSub&0ffh
+	DB "NE",'W'+128
 	
-	RET
+; before operators are non-statement
+; non-operator tokens
 
-MulSub:
-; 20 bytes
-; multiple HL and DE into DE, preserving B
-	PUSH B
-	MOV B,H
-	MOV C,L
+	DB AbsSub&0ffh
+	DB "AB",'S'+128
+	DB UsrSub&0ffh
+	DB "US",'R'+128
+	DB RndSub&0ffh
+	DB "RN",'D'+128
+	
+	DB ToToken&0ffh
+	DB "T",'O'+128
+	DB StepToken&0ffh
+	DB "STE",'P'+128
+	DB CommaToken
+	DB ','+128
+	DB LeftBraceToken&0ffh
+	DB '('+128
+  DB RightBraceToken&0ffh
+	DB ')'+128
+	DB EqualSub&0ffh
+	DB '='+128
+	DB NotEqualSub&0ffh
+	DB "<",'>'+128
+	DB GTESub&0ffh
+	DB ">",'='+128
+	DB LTESub&0ffh
+	DB "<",'='+128
+	DB LTSub&0ffh
+	DB '<'+128
+	DB GTSub&0ffh
+	DB '>'+128
+	DB AddSub&0ffh
+	DB '+'+128
+	DB SubSub&0ffh
+	DB '-'+128
+	DB MulSub&0ffh
+	DB '*'+128
+	DB DivSub&0ffh
+	DB '/'+128
+	DB 255 ; 255 can only occur at the end
 
-Multiply:
-;multiply BC and DE into DE
-	MVI A,16
-MulLoop:
-	DAD H
-	XCHG
-	DAD H
-	XCHG
-	JNC DontAdd
-	DAD B
-DontAdd:
-
-	DCR A
-	JNZ MulLoop
-	
-	XCHG
-	POP B
-	RET
-	
-DivSub:
-; 31 bytes
-;Divide HL by DE
-;Remainder in HL 
-;Result in DE
-
-DivideHL:
-;Divide HL by DE
-	; Make HL and DE different signs
-  MOV A,H
-  CALL AbsSub
-	PUSH PSW
-	
-;Divide HL by DE
-;Assuming that HL and DE are different signs
-
-	PUSH B
-	LXI B,0ffffh
-	
-; Do the test for zero here because we want the
-; CZ to be on page 3
-; This means that divide by zero and unterminated
-; string both have tbe same error code, but kt
-; will be obvious to the programmer which is
-; intended
-	MOV A,D
-  ORA E
-DivJZError:
-  CZ Error
-	
-DivLoop:
-	INX B
-	DAD D
-	RAR   ; look for mismatch between carry and
-				; bit 7 of D to detect overflow/underflow
-	XRA D
-	JP DivLoop
-
-	; if HL is zero then it must have been a negative number originally, and the remainder is zero, so don't make any change to HL, but increment quotient by 1
-	
-	MOV A,H
-	ORA L
-	RST_JZPage ; assume it is on same page
-						 ; because DivSub will
-						 ; be right at end of page 2
-	DB (DivNoRestore&0ffh)-1
-	
- 	RST_NegateDE
- 	DAD D
-	DCX B
-	
-DivNoRestore:
-	INX B
-	MOV D,B
-	MOV E,C
-	
-	POP B
-	
-	POP PSW
-	RP
-	RST_NegateDE
-	
-	RET
-	
 ; GetLine sits entirely in page 3
 ; good - it uses RST_CompareJump in two
 ; places, so be careful if moving it
@@ -1877,128 +1977,3 @@ DB 48,DigitClass&0ffh
 DB 33,LT0Class&0ffh
 DB 0,FreshStart&0ffh
 
-GetLineNum:
-	; Line number is in DE, look it up in the 
-	; program and set BC to point to the LinenumSub
-	; token.
-	;
-	; DE is preserved
-	; H is preserved
-	; L is not preserved
-	; 
-	; return with Z set if successful
-	;
-	; Z clear if not successful, and BC points
-	; to the first byte of the line with number
-	; greater than the request
-	
-	LXI B,PROG_BASE-1 ; 1 bytes before PROG_BASE
-
-GetLineNumLoop:
-	CALL ATNLN_INXB ; has one INX B preceeding
-	RNZ
-	
-	INX B
-	
-	; Test for DE <= (BC), and return if true
-	LDAX B
-	INX B
-	SUB E
-	MOV L,A
-	LDAX B
-	SBB D ; C set if DE > (BC), and Z not set
-				; C clear if DE <= (BC)
-	JC GetLineNumLoop
-	
-	DCX B
-	DCX B
-	; Now we want Z set if DE=(BC), clear
-	; otherwise 
-	
-ATNLN_RetNZ: ; shared code. Returns NZ if we know
-						 ; that A is non-zero
-	ORA L
-	
-	RET
-
-ATNLN_String:
-	RST_LDAXB_INXB_CPI
-	DB StringToken
-	JNZ ATNLN_String
-	
-	DB 0c2h ; opcode for JNZ eats 2 bytes
-ATNLN_Int: ; Z is always set when we reach here
-	INX B
-ATNLN_INXB:
-	INX B
-	
-AdvanceToNextLineNum:
-; BC is a pointer to somewhere in the program.
-; Move onto the next line number.
-; Return with Z set if successful,
-; Z clear if fell off end of program
-
-	LDAX B
-	RST_CompareJump
-	DB EndProgram&0ffh,(ATNLN_RetNZ&0ffh)-1
-	; fell off end of program
-	
-	CPI LinenumSub&0ffh
-	RZ
-	
-	INX B
-	
-	RST_CompareJump
-	DB IntegerToken,(ATNLN_Int&0ffh)-1
-	RST_CompareJump
-	DB StringToken,(ATNLN_String&0ffh)-1
-	JMP AdvanceToNextLineNum
-
-ForSubImpl:
-	; Stack contains return address:
-	; ExecuteProgramLoop - EPL
-	; Keep it there even though it isn't used by 
-	; ForSub, it will be used by NextSub
-	
-	PUSH H ; stack contains <SP> VL+1, EPL
-	
-	; check that we have a 'TO' token
-	RST_LDAXB_INXB_CPI
-	DB ToToken&0ffh
-	CNZ Error
-	
-	RST_ExpEvaluate
-	RST_NegateDE
-	
-	PUSH D ; stack contains <SP> -T,VL+1, EPL
-				 ; T is target
-				 
-	; step is going to be 1 unless we encounter
-	; a STEP token
-	LXI D,1
-	LDAX B
-	
-	; check for optional STEP token
-	RST_CompareJump
-	DB StepToken&0ffh,(ForWithStep&0ffh)-1
-
-	DB 21h ; LXI H opcode eats the next 2 bytes
-ForWithStep:
-	; we have step token
-	INX B
-	RST_ExpEvaluate
-	
-	POP H
-	POP H   ; H contains VL+1
-	
-	        ; B contains the start address of the
-	        ; loop (LS)
-	        
-	PUSH B	; stack contains -T <SP> LS,EPL
-	DCX SP
-	DCX SP  ; stack contains <SP> -T,LS,EPL
-	PUSH D	; stack contains <SP>,S,-T,LS,EPL
-	PUSH H  ; stack contains <SP>,VL+1,S,-T,LS,EPL
-	
-	JMP ExecuteProgramLoop
-	
