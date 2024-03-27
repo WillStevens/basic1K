@@ -349,6 +349,10 @@
 ; 2024-03-26 In the process of making major
 ;     rearrangements to save several bytes and 
 ;     fix the bug mentioned above.
+; 2024-03-27 Major rearrangements have been done.
+;      Net reault is to save 5 bytes, but need
+;      to carefully check whether any same-page
+;      assumptions are violated
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -713,57 +717,6 @@ ForWithStep:
 	
 	JMP ExecuteProgramLoop
 
-GetVarLocationBVar:
-  RST_LDAXB_INXB_CPI
-  
-	; Test that we have a var
-	db 32
-	CNC Error
-
-GetVarLocation:
-; A should contain a var token
-; and B points to tbe location after
-; the var token
-; return with var address in HL
-; and B pointing to next char
-; A will never be 255 on return
-
-	MVI H,VAR_SPACE/256
-	ADD A
-	MOV L,A
-	
-	RNZ
-	
-	; fall through if it is array var
-	
-	CALL ExpBracketedB
-	
-	; Now DE contains the array index
-	; Add it twice to get the offset
-	
-	LHLD PROG_PARSE_PTR
-	INX H ; up 1 byte to avoid EndProgram marker
-	DAD D
-	DAD D
-
-OutputStringRet: ; shared code, nearest RET
-	RET
-
-; This 9 byte routine can be moved anywhere to
-; fill holes
-OutputString:
-;Pointer in B points to string token marker
-	INX B
-OutputStringLoop:
-	RST_LDAXB_INXB_CPI
-	DB StringToken
-	RST_JZPage
-	DB (OutputStringRet&0ffh)-1
-OutputString_WithQuote:
-	RST_PutChar
-	RST_JZPage
-	DB (OutputStringLoop&0ffh)-1
-
 ExpLeftBrace:
 	DCX B
 FunctionCall:
@@ -803,8 +756,10 @@ Error:
 	
 	; fall through
 	
-	; we need ready to be at 00DE
-org 00deh
+	; we need ready to be at an address
+	; corresponding to harmless opcodes when
+	; executed in ExecuteProgram
+org 00bdh
 Ready:
 	; Set stack pointer
 	; Do this every time to guard against
@@ -965,196 +920,310 @@ ReverseLoop:
 	
 	JMP ReverseLoop
 
-GetLineNum:
-	; Line number is in DE, look it up in the 
-	; program and set BC to point to the LinenumSub
-	; token.
-	;
-	; DE is preserved
-	; H is preserved
-	; L is not preserved
-	; 
-	; return with Z set if successful
-	;
-	; Z clear if not successful, and BC points
-	; to the first byte of the line with number
-	; greater than the request
-	
-	LXI B,PROG_BASE-1 ; 1 bytes before PROG_BASE
-
-GetLineNumLoop:
-	CALL ATNLN_INXB ; has one INX B preceeding
-	RNZ
-	
+; This 8 byte routine can be moved anywhere to
+; fill holes. It needs a RET on the same
+; page to jump to
+OutputString:
+;Pointer in B points to string token marker
 	INX B
-	
-	; Test for DE <= (BC), and return if true
-	LDAX B
-	INX B
-	SUB E
-	MOV L,A
-	LDAX B
-	SBB D ; C set if DE > (BC), and Z not set
-				; C clear if DE <= (BC)
-	JC GetLineNumLoop
-	
-	DCX B
-	DCX B
-	; Now we want Z set if DE=(BC), clear
-	; otherwise 
-	
-ATNLN_RetNZ: ; shared code. Returns NZ if we know
-						 ; that A is non-zero
-	ORA L
-	
-	RET
-
-ATNLN_String:
+OutputStringLoop:
 	RST_LDAXB_INXB_CPI
 	DB StringToken
-	JNZ ATNLN_String
-	
-	DB 0c2h ; opcode for JNZ eats 2 bytes
-ATNLN_Int: ; Z is always set when we reach here
-	INX B
-ATNLN_INXB:
-	INX B
-	
-AdvanceToNextLineNum:
-; BC is a pointer to somewhere in the program.
-; Move onto the next line number.
-; Return with Z set if successful,
-; Z clear if fell off end of program
-
-	LDAX B
-	RST_CompareJump
-	DB EndProgram&0ffh,(ATNLN_RetNZ&0ffh)-1
-	; fell off end of program
-	
-	CPI LinenumSub&0ffh
-	RZ
-	
-	INX B
-	
-	RST_CompareJump
-	DB IntegerToken,(ATNLN_Int&0ffh)-1
-	RST_CompareJump
-	DB StringToken,(ATNLN_String&0ffh)-1
-	JMP AdvanceToNextLineNum
-
-ListLoop:
-	MVI A,' '
-	RST_PutChar
-	
-	RST_LDAXB_INXB_CPI
-	DB EndProgram&0ffh
-	RZ
-	
-  LXI H,ListLoop	; so that we can loop using RET
-  PUSH H
-  
-  ; H is already set to the correct page
-  MVI L,(TokenList-1)&0ffh
-
-	; These need to be on same page
-	; currently on page 3
-	RST_CompareJump
-	DB StringToken,(List_String&0ffh)-1
-	RST_CompareJump
-	DB LinenumSub&0ffh,(List_Linenum&0ffh)-1
-  RST_CompareJump
-	DB IntegerToken,(List_Integer&0ffh)-1
-  
-  JC List_Var
-  
-  ; No need to check for end of TokenList
-  ; impossible not to be a token value in A
-  
-List_Token_Loop:
-  MOV D,M
-  INR D
-  INX H
-  JP List_Token_Loop
-  
-List_Token:
-	; on entry, A contains the token
-  ; so must not use A during this loop
-  CMP M
-  INX H
-  JNZ List_Token_Loop
-	
-List_Token_String_Loop:
-  MOV A,M
-  ANI 07fh
-  RST_PutChar
-  ORA M
-  INX H
-  JP List_Token_String_Loop
-  
-  RET
-	
-List_LineNum:
-	CALL CRLF
- 
-List_Integer:
-  LDAX B
-  INX B
-	MOV E,A
-	LDAX B
-	INX B
-	MOV D,A
- 	; fall through to PrintInteger
- 	
-;Output the value in DE
-PrintInteger:
-	XRA A
-	PUSH PSW			; end marker is Z flag
-	
-	ORA D			; S is set if -ve
-	RST_NegateDE
-	
-	JP PrintIntegerLoop
-	MVI A,'-'
-	RST_Putchar
-	RST_NegateDE
-	
-PrintIntegerLoop:
-	; need HL to be -ve here, so that it can
-	; handle -32768
-	
-	XCHG
-	LXI D,10
-	
-	CALL DivideHL
-	; HL contains remainder after / 10
-	; DE contains the quotient
-
-	MVI A,'0'
-	SUB L
-	PUSH PSW ; push onto stack
-	
-	; if DE is zero we are done
-	MOV A,D
-	ORA E
-	JNZ PrintIntegerLoop
-	
-PrintIntegerLoop2:
-	POP PSW
-	RZ ; Z is set on return, HL<=0
+	RST_JZPage
+	DB (OutputStringRet&0ffh)-1
+OutputString_WithQuote:
 	RST_PutChar
 	RST_JZPage
-	db (PrintIntegerLoop2&0ffh)-1
+	DB (OutputStringLoop&0ffh)-1
+	
+; GetLine sits entirely in page 1
+; good - it uses RST_CompareJump in two
+; places, so be careful if moving it
+; Also it assumes ClassLookup on same page
+; as NoCharClass
 
-List_String:
-	CALL OutputString_WithQuote
+NLTestTrue:
+	; A contains 13 at this point
+	; we want to ooutput line feed (10)
+	; because H is 3, we can subtract this from A
+	SUB H
+	RST_PutChar
+	
+	; error if we are in the middle
+	; of a string
+	MOV A,L
+  RST_CompareJump
+	DB QuoteClassExpEnd&0ffh
+	DB (DivJZError-1)&0ffh
+	
+	POP H
+OutputStringRet:
+	RET
 
-	DB 011h ; LXI D skips 2 bytes
-List_Var:
-  ADI '@'
-  RST_PutChar
-  RET ; byte before TokenList must have high bit set
+GetLine:
+	; HL points where we want the line to be
+	; parsed to.
+	; On return HL points to byte after what we've 
+	; got.
+	
+	MVI A,'>'
+	RST_PutChar
+
+GetLineNoPrompt:
+
+	PUSH H
+	
+	; A is zero at this point
+	; (needs to be <>newline character on fall 
+	; through to NLTest)
+
+FreshStart:
+
+  LXI H,NoCharClass
+	
+NLTest:
+  MOV A,B
+	; check for newline
+	RST_CompareJump
+	DB 13,(NLTestTrue&0ffh)-1
+	
+NextCharLoop:
+	; This code is compatable with Stefan Tramm's
+	; 8080 emulator
+	IN 0
+	ANA A
+	RST_JZPage
+	db (NextCharLoop&0ffh)-1
+	IN 1
+	MOV B,A
+	OUT 1 ; echo
+	
+  ; Do we have the same class as before?
+  PUSH H
+	MVI L,(ClassLookup&0ffh)-1
+	; Test for quote first
+	; This doesn't save spave, but takes 3 bytes
+	; away from class lookip and puts them here
+	; so can be used to change odd/even of
+	; ...Class subroutines
+	RST_CompareJump
+	DB 34,(LC_QuoteTestTrue-1)&0ffh
+LookupClassLoop:
+	INR L
+	CMP M
+	INR L
+	JC LookupClassLoop
+LC_QuoteTestTrue:
+	MOV C,M
+	POP H
+	
+  ; are L and C equal?
+  MOV A,L
+  XRA C
+  ; Z if they are equal, NZ if not
   
+  PCHL ; Jump based on previous CharClass pointer 
 
+DigitClass:
+	RST_JZPage
+  DB (DigitClassNotEnd&0ffh)-1
+  
+DigitClassEnd:
+  ; Write token into program
+  ; need to preserve DE, don't care about HL
+  
+  XTHL
+  MVI M,IntegerToken
+  INX H
+  MOV M,E
+  INX H
+  DB 36h ; opcode for MVI M eats next byte
+Write_Shared_AtSP:
+  POP D
+Write_Shared:
+  MOV M,D
+Write_Shared_Written:
+  INX H
+  XTHL
+
+NoCharClass:
+  MOV L,C
+  XRA A ; set Z
+  MOV D,A ; reset state information
+  MOV E,A
+
+  PCHL
+  
+DigitClassNotEnd:
+ 	PUSH H
+  ; A is zero at this point
+  
+  ; Accumulate the value into D
+
+	; Muliply by 10
+	MOV H,D
+	MOV L,E
+	
+	DAD H
+	DAD H
+	DAD D
+	DAD H
+	
+	; Add in the new digit
+	
+	MOV D,A
+	MOV A,B
+	ANI 0fh
+	MOV E,A
+	DAD D
+	
+	XCHG
+	
+	POP H
+	
+  JMP NextCharLoop
+  
+QuoteClassExpEnd:
+  
+  ; A is equal to:
+	; char class (C) XOR QuoteCharClassExpEnd
+	
+	; so long as QuoteCharClass is the only class
+	; with an odd address or the only one
+	; with an even address then A will only
+	; have LSB=1 if current char class
+	; is QuoteCharClass - i.e. end of string
+	
+	db 0e6h ; opcode for ANI eats next byte
+	        ; (which is 2dh lsbits are 01)
+	
+QuoteClass:
+  
+  DCR L ; set to QuoteClassExpEnd
+  
+  ; first time through A is zero 
+	; on fall A is even unless C is QuoteClass
+	
+	ANA H ; H is 3 
+	
+	; Now Z is set if this was first Quote, or if
+	; we are in a string and haven't reached 
+	; last quote
+	
+	; carry is clear here
+	db 0dah ; opcode for JC eats next 2 bytes
+LT0Class:
+	INX H; next char should always count as 
+	      ; different class
+	NOP
+
+CompClass:
+	NOP
+	NOP
+AlphaClass:
+	
+	XTHL
+	MOV M,B
+	INX H
+	XTHL
+	
+	DCX D ; increase char count
+	
+	; if NZ then we will just
+	; have written a different class char:
+	; good, this ensures no spurious
+	; strcmp matches from leftover
+	; buffer contents
+	
+	; now we need to decide whether to jump to:
+	; FreshStart - if its the last quote in
+	;							 a string
+	; NLTest		 - if part way through string or 
+	;								token
+	; TokenClassEnd - if end of token
+	
+	RST_JZPage
+	DB (NLTest&0ffh)-1
+	
+  MOV A,L
+	RST_CompareJump
+	DB QuoteClassExpEnd&0ffh,(FreshStart&0ffh)-1
+	
+TokenClassEnd:
+
+	; Make H point to the start of the token
+	; to be looked up
+	XTHL
+	DAD D
+	
+	; it's a var if bits 7,6,5 are 010 and
+  ; E=-2
+  ; These aren't the only conditions that 
+  ; could lead to the test below passing - 
+  ; e.g. if 7,6,5=001 and E=10011110. But E
+  ; has to be large for this to happen, so
+  ; quite unlikely in practice.
+  
+	MOV A,M
+	XRI 040h
+	MOV D,A
+	ANI 0e0h
+	XRA E
+	
+	RST_CompareJump
+	DB 0feh,(Write_Shared&0ffh)-1
+	
+	LXI D,TokenList
+
+LookupToken_Loop:
+	LDAX D
+	PUSH PSW
+	PUSH H
+StrCmp:
+	INX D
+	LDAX D
+	XRA M
+	; iff match then A is either 00h or 80h
+	; (80h if last char)
+	INX H
+	RST_JZPage
+	DB (Strcmp&0ffh)-1 ; match and not last char
+	
+	; equal to 080h iff match and last char
+	XRI 080h
+	; equal to Z iff match and last char
+
+	POP H
+	
+	RST_JZPage
+	DB (Write_Shared_AtSP&0ffh)-1
+	
+	POP PSW
+	
+LookupToken:
+	LDAX D
+	INR A
+	INX D
+  JM LookupToken_Loop
+  JNZ LookupToken
+	
+  ; didn't find it
+  
+  ; if (HL)>=64 and (HL+1)<64 then its a var
+  ; could do the var test here
+  ; if it can be done in few bytes
+	
+	MVI M,QuestionMarkToken&0ffh
+	RST_JZPage
+	DB (Write_Shared_Written&0ffh)-1
+
+DB QuoteClass&0ffh
+ClassLookup:
+DB 64,AlphaClass&0ffh
+DB 58,CompClass&0ffh
+DB 48,DigitClass&0ffh
+DB 33,LT0Class&0ffh
+DB 0,FreshStart&0ffh
 
 org 01cdh
 ; Token values >= this are all operators
@@ -1487,15 +1556,6 @@ NextSubLoop:
 	SPHL
 	
 	RET
-	
-IfSub:
-	RST_ExpEvaluate
-	MOV A,D
-	ORA E
-	RNZ
-
-	; If DE zero then fall through to next line
-	JMP AdvanceToNextLineNum 
 
 EndSub:
 	JMP Ready
@@ -1529,6 +1589,9 @@ ExecuteDirect:
 	ADI LineNumSub&0ffh
 	
 	; Carry is clear now
+	; Sign is set/reset according to the
+	; address of the statement Sub
+	; e.g. for LineNumSub Sign is clear
 	
 	; Put return address onto stack
 	LXI H,ExecuteProgramLoop
@@ -1547,18 +1610,26 @@ ExecuteDirect:
 NewSub:
 	RST 0
 
-LastStatement:
 ListSub:
-	LXI B,PROG_BASE
-  JMP ListLoop
+  JMP ListSubImpl
+
+LastStatement:
+IfSub:
+	RST_ExpEvaluate
+	MOV A,D
+	ORA E
+	RNZ
+
+	; If DE zero then fall through to next line
+	JMP AdvanceToNextLineNum 
 	
 ; ( ) , TO STEP tokens must have values between 
 ; statements and functions
 
-ToToken equ ListSub+1
-StepToken equ ListSub+2
-RightBraceToken equ ListSub+3
-CommaToken equ ListSub+4
+ToToken equ LastStatement+1
+StepToken equ LastStatement+2
+RightBraceToken equ LastStatement+3
+CommaToken equ LastStatement+4
 
 AbsSub:
 	; A = right brace token, which has high bit
@@ -1603,12 +1674,234 @@ RndSub:
   XCHG
   RET
 
+; This 20 byte routine can be moved as needed
+GetVarLocationBVar:
+  RST_LDAXB_INXB_CPI
+  
+	; Test that we have a var
+	db 32
+	CNC Error
 
-; Index to subroutine address must not overlap with other tokens
-; Currently TokenList starts toward the end
-; of page 1, and DivSub begins towards the end
-; of page 2 and the subroutine extends into page 3
+GetVarLocation:
+; A should contain a var token
+; and B points to tbe location after
+; the var token
+; return with var address in HL
+; and B pointing to next char
+; A will never be 255 on return
 
+	MVI H,VAR_SPACE/256
+	ADD A
+	MOV L,A
+	
+	RNZ
+	
+	; fall through if it is array var
+	
+	CALL ExpBracketedB
+	
+	; Now DE contains the array index
+	; Add it twice to get the offset
+	
+	LHLD PROG_PARSE_PTR
+	INX H ; up 1 byte to avoid EndProgram marker
+	DAD D
+	DAD D
+	RET
+
+GetLineNum:
+	; Line number is in DE, look it up in the 
+	; program and set BC to point to the LinenumSub
+	; token.
+	;
+	; DE is preserved
+	; H is preserved
+	; L is not preserved
+	; 
+	; return with Z set if successful
+	;
+	; Z clear if not successful, and BC points
+	; to the first byte of the line with number
+	; greater than the request
+	
+	LXI B,PROG_BASE-1 ; 1 bytes before PROG_BASE
+
+GetLineNumLoop:
+	CALL ATNLN_INXB ; has one INX B preceeding
+	RNZ
+	
+	INX B
+	
+	; Test for DE <= (BC), and return if true
+	LDAX B
+	INX B
+	SUB E
+	MOV L,A
+	LDAX B
+	SBB D ; C set if DE > (BC), and Z not set
+				; C clear if DE <= (BC)
+	JC GetLineNumLoop
+	
+	DCX B
+	DCX B
+	; Now we want Z set if DE=(BC), clear
+	; otherwise 
+	
+ATNLN_RetNZ: ; shared code. Returns NZ if we know
+						 ; that A is non-zero
+	ORA L
+
+	RET
+
+ATNLN_String:
+	RST_LDAXB_INXB_CPI
+	DB StringToken
+	JNZ ATNLN_String
+	
+	DB 0c2h ; opcode for JNZ eats 2 bytes
+ATNLN_Int: ; Z is always set when we reach here
+	INX B
+ATNLN_INXB:
+	INX B
+	
+AdvanceToNextLineNum:
+; BC is a pointer to somewhere in the program.
+; Move onto the next line number.
+; Return with Z set if successful,
+; Z clear if fell off end of program
+
+	LDAX B
+	RST_CompareJump
+	DB EndProgram&0ffh,(ATNLN_RetNZ&0ffh)-1
+	; fell off end of program
+	
+	CPI LinenumSub&0ffh
+	RZ
+	
+	INX B
+	
+	RST_CompareJump
+	DB IntegerToken,(ATNLN_Int&0ffh)-1
+	RST_CompareJump
+	DB StringToken,(ATNLN_String&0ffh)-1
+	JMP AdvanceToNextLineNum
+
+ListSubImpl:
+	LXI B,PROG_BASE
+ListLoop:
+	MVI A,' '
+	RST_PutChar
+	
+	RST_LDAXB_INXB_CPI
+	DB EndProgram&0ffh
+	RZ
+	
+  LXI H,ListLoop	; so that we can loop using RET
+  PUSH H
+  
+  ; H is already set to the correct page
+  MVI L,(TokenList-1)&0ffh
+
+	; These need to be on same page
+	RST_CompareJump
+	DB StringToken,(List_String&0ffh)-1
+	RST_CompareJump
+	DB LinenumSub&0ffh,(List_Linenum&0ffh)-1
+  RST_CompareJump
+	DB IntegerToken,(List_Integer&0ffh)-1
+  
+  JC List_Var
+  
+  ; No need to check for end of TokenList
+  ; impossible not to be a token value in A
+  
+List_Token_Loop:
+  MOV D,M
+  INR D
+  INX H
+  JP List_Token_Loop
+  
+List_Token:
+	; on entry, A contains the token
+  ; so must not use A during this loop
+  CMP M
+  INX H
+  JNZ List_Token_Loop
+	
+List_Token_String_Loop:
+  MOV A,M
+  ANI 07fh
+  RST_PutChar
+  ORA M
+  INX H
+  JP List_Token_String_Loop
+  
+  RET
+	
+List_LineNum:
+	CALL CRLF
+ 
+List_Integer:
+  LDAX B
+  INX B
+	MOV E,A
+	LDAX B
+	INX B
+	MOV D,A
+ 	; fall through to PrintInteger
+ 	
+;Output the value in DE
+PrintInteger:
+	XRA A
+	PUSH PSW			; end marker is Z flag
+	
+	ORA D			; S is set if -ve
+	RST_NegateDE
+	
+	JP PrintIntegerLoop
+	MVI A,'-'
+	RST_Putchar
+	RST_NegateDE
+	
+PrintIntegerLoop:
+	; need HL to be -ve here, so that it can
+	; handle -32768
+	
+	XCHG
+	LXI D,10
+	
+	CALL DivideHL
+	; HL contains remainder after / 10
+	; DE contains the quotient
+
+	MVI A,'0'
+	SUB L
+	PUSH PSW ; push onto stack
+	
+	; if DE is zero we are done
+	MOV A,D
+	ORA E
+	JNZ PrintIntegerLoop
+	
+PrintIntegerLoop2:
+	POP PSW
+	RZ ; Z is set on return, HL<=0
+	RST_PutChar
+	RST_JZPage
+	db (PrintIntegerLoop2&0ffh)-1
+
+List_String:
+	CALL OutputString_WithQuote
+
+	DB 011h ; LXI D skips 2 bytes
+List_Var:
+  ADI '@'
+  RST_PutChar
+  RET 
+  
+; byte before TokenList must have high bit set
+; e.g. RET
+  
 ; order in this list must make sure that a
 ; token A that is a left substring of another
 ; token B appears later in the list than B
@@ -1687,293 +1980,4 @@ TokenList:
 	DB DivSub&0ffh
 	DB '/'+128
 	DB 255 ; 255 can only occur at the end
-
-; GetLine sits entirely in page 3
-; good - it uses RST_CompareJump in two
-; places, so be careful if moving it
-; Also it assumes ClassLookup on same page
-; as NoCharClass
-
-NLTestTrue:
-	; A contains 13 at this point
-	; we want to ooutput line feed (10)
-	; because H is 3, we can subtract this from A
-	SUB H
-	RST_PutChar
-	
-	; error if we are in the middle
-	; of a string
-	MOV A,L
-  RST_CompareJump
-	DB QuoteClassExpEnd&0ffh
-	DB (DivJZError-1)&0ffh
-	
-	POP H
-	
-	RET
-
-GetLine:
-	; HL points where we want the line to be
-	; parsed to.
-	; On return HL points to byte after what we've 
-	; got.
-	
-	MVI A,'>'
-	RST_PutChar
-
-GetLineNoPrompt:
-
-	PUSH H
-	
-	; A is zero at this point
-	; (needs to be <>newline character on fall 
-	; through to NLTest)
-
-FreshStart:
-
-  LXI H,NoCharClass
-	
-NLTest:
-  MOV A,B
-	; check for newline
-	RST_CompareJump
-	DB 13,(NLTestTrue&0ffh)-1
-	
-NextCharLoop:
-	; This code is compatable with Stefan Tramm's
-	; 8080 emulator
-	IN 0
-	ANA A
-	RST_JZPage
-	db (NextCharLoop&0ffh)-1
-	IN 1
-	MOV B,A
-	OUT 1 ; echo
-	
-  ; Do we have the same class as before?
-  PUSH H
-	MVI L,(ClassLookup&0ffh)-1
-	; Test for quote first
-	; This doesn't save spave, but takes 3 bytes
-	; away from class lookip and puts them here
-	; so can be used to change odd/even of
-	; ...Class subroutines
-	RST_CompareJump
-	DB 34,(LC_QuoteTestTrue-1)&0ffh
-LookupClassLoop:
-	INR L
-	CMP M
-	INR L
-	JC LookupClassLoop
-LC_QuoteTestTrue:
-	MOV C,M
-	POP H
-	
-  ; are L and C equal?
-  MOV A,L
-  XRA C
-  ; Z if they are equal, NZ if not
-  
-  PCHL ; Jump based on previous CharClass pointer 
-
-DigitClass:
-	RST_JZPage
-  DB (DigitClassNotEnd&0ffh)-1
-  
-DigitClassEnd:
-  ; Write token into program
-  ; need to preserve DE, don't care about HL
-  
-  XTHL
-  MVI M,IntegerToken
-  INX H
-  MOV M,E
-  INX H
-  DB 36h ; opcode for MVI M eats next byte
-Write_Shared_AtSP:
-  POP D
-Write_Shared:
-  MOV M,D
-Write_Shared_Written:
-  INX H
-  XTHL
-
-NoCharClass:
-  MOV L,C
-  XRA A ; set Z
-  MOV D,A ; reset state information
-  MOV E,A
-
-  PCHL
-  
-DigitClassNotEnd:
- 	PUSH H
-  ; A is zero at this point
-  
-  ; Accumulate the value into D
-
-	; Muliply by 10
-	MOV H,D
-	MOV L,E
-	
-	DAD H
-	DAD H
-	DAD D
-	DAD H
-	
-	; Add in the new digit
-	
-	MOV D,A
-	MOV A,B
-	ANI 0fh
-	MOV E,A
-	DAD D
-	
-	XCHG
-	
-	POP H
-	
-  JMP NextCharLoop
-  
-QuoteClassExpEnd:
-  
-  ; A is equal to:
-	; char class (C) XOR QuoteCharClassExpEnd
-	
-	; so long as QuoteCharClass is the only class
-	; with an odd address or the only one
-	; with an even address then A will only
-	; have LSB=1 if current char class
-	; is QuoteCharClass - i.e. end of string
-	
-	db 0e6h ; opcode for ANI eats next byte
-	        ; (which is 2dh lsbits are 01)
-	
-QuoteClass:
-  
-  DCR L ; set to QuoteClassExpEnd
-  
-  ; first time through A is zero 
-	; on fall A is even unless C is QuoteClass
-	
-	ANA H ; H is 3 
-	
-	; Now Z is set if this was first Quote, or if
-	; we are in a string and haven't reached 
-	; last quote
-	
-	; carry is clear here
-	db 0dah ; opcode for JC eats next 2 bytes
-LT0Class:
-	INX H; next char should always count as 
-	      ; different class
-	NOP
-
-CompClass:
-	NOP
-	NOP
-AlphaClass:
-	
-	XTHL
-	MOV M,B
-	INX H
-	XTHL
-	
-	DCX D ; increase char count
-	
-	; if NZ then we will just
-	; have written a different class char:
-	; good, this ensures no spurious
-	; strcmp matches from leftover
-	; buffer contents
-	
-	; now we need to decide whether to jump to:
-	; FreshStart - if its the last quote in
-	;							 a string
-	; NLTest		 - if part way through string or 
-	;								token
-	; TokenClassEnd - if end of token
-	
-	RST_JZPage
-	DB (NLTest&0ffh)-1
-	
-  MOV A,L
-	RST_CompareJump
-	DB QuoteClassExpEnd&0ffh,(FreshStart&0ffh)-1
-	
-TokenClassEnd:
-
-	; Make H point to the start of the token
-	; to be looked up
-	XTHL
-	DAD D
-	
-	; it's a var if bits 7,6,5 are 010 and
-  ; E=-2
-  ; These aren't the only conditions that 
-  ; could lead to the test below passing - 
-  ; e.g. if 7,6,5=001 and E=10011110. But E
-  ; has to be large for this to happen, so
-  ; quite unlikely in practice.
-  
-	MOV A,M
-	XRI 040h
-	MOV D,A
-	ANI 0e0h
-	XRA E
-	
-	RST_CompareJump
-	DB 0feh,(Write_Shared&0ffh)-1
-	
-	LXI D,TokenList
-
-LookupToken_Loop:
-	LDAX D
-	PUSH PSW
-	PUSH H
-StrCmp:
-	INX D
-	LDAX D
-	XRA M
-	; iff match then A is either 00h or 80h
-	; (80h if last char)
-	INX H
-	RST_JZPage
-	DB (Strcmp&0ffh)-1 ; match and not last char
-	
-	; equal to 080h iff match and last char
-	XRI 080h
-	; equal to Z iff match and last char
-
-	POP H
-	
-	RST_JZPage
-	DB (Write_Shared_AtSP&0ffh)-1
-	
-	POP PSW
-	
-LookupToken:
-	LDAX D
-	INR A
-	INX D
-  JM LookupToken_Loop
-  JNZ LookupToken
-	
-  ; didn't find it
-  
-  ; if (HL)>=64 and (HL+1)<64 then its a var
-  ; could do the var test here
-  ; if it can be done in few bytes
-	
-	MVI M,QuestionMarkToken&0ffh
-	RST_JZPage
-	DB (Write_Shared_Written&0ffh)-1
-
-DB QuoteClass&0ffh
-ClassLookup:
-DB 64,AlphaClass&0ffh
-DB 58,CompClass&0ffh
-DB 48,DigitClass&0ffh
-DB 33,LT0Class&0ffh
-DB 0,FreshStart&0ffh
 
