@@ -353,6 +353,12 @@
 ;      Net reault is to save 5 bytes, but need
 ;      to carefully check whether any same-page
 ;      assumptions are violated
+; 2024-03-28 Found and fixed several bugs related
+;			 to above changes. Execution of ? token
+;			 seems to take too long, implying a
+;			 remaining bug. 9 bytes free now, 5 of 
+;			 which are contiguous at the end of the
+;			 program.
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -551,7 +557,8 @@ ExpEvaluate:
 
 ; ExpEvaluate must not be called
 ; from page 1, The hi byte of the return address
-; is a marker to distinguish it from an operator
+; is a marker to distinguish it from an operator.
+; Only operators have hi byte = 1
 
 ExpEvaluateNum:
 	; Expecting ( var integer or - sign
@@ -602,7 +609,7 @@ ExpEvaluateOp:
 	;Are there operators on the stack?
 	POP H
 	
-	; H will be 2 or 3 if no operators on
+	; H will be 0, 2 or 3 if no operators on
 	; stack (i.e. high byte of return address)
 	
 	MOV A,H
@@ -661,7 +668,7 @@ ExpNegate:
 	; Put 0 onto stack and operator onto
 	; operator stack
 	
-	PUSH D							; 0 operand
+	PUSH D							; operand
 
 	MOV L,A
 	MVI H,AddSub/256
@@ -840,10 +847,10 @@ LineStartsWithInt:
 	
 	PUSH D ; middle
 	
-	XRA A
+	; carry is clear here from the call to
+	; GwrLineNum
 	
-	RST_JZPage
-	DB (Entry&0ffh)-1
+	JMP Entry
 
 DeleteProgramLine:
 ; 25 bytes
@@ -946,8 +953,8 @@ NLTestTrue:
 	; A contains 13 at this point
 	; we want to ooutput line feed (10)
 	; because H is 3, we can subtract this from A
-	SUB H
-	RST_PutChar
+	;SUB H
+	;RST_PutChar
 	
 	; error if we are in the middle
 	; of a string
@@ -985,7 +992,7 @@ NLTest:
   MOV A,B
 	; check for newline
 	RST_CompareJump
-	DB 13,(NLTestTrue&0ffh)-1
+	DB 10,(NLTestTrue&0ffh)-1
 	
 NextCharLoop:
 	; This code is compatable with Stefan Tramm's
@@ -1003,7 +1010,7 @@ NextCharLoop:
 	MVI L,(ClassLookup&0ffh)-1
 	; Test for quote first
 	; This doesn't save spave, but takes 3 bytes
-	; away from class lookip and puts them here
+	; away from class lookup and puts them here
 	; so can be used to change odd/even of
 	; ...Class subroutines
 	RST_CompareJump
@@ -1264,7 +1271,7 @@ NotEqualSub:
 	RET
   
 AddSub:
-	DB 3eh	; opcode for JNC, to eat next 2 bytes
+	DB 0d2h	; opcode for JNC, to eat next 2 bytes
 					; (since carry is set when we reach
 					; AddSub)
 SubSub:
@@ -1400,10 +1407,9 @@ PrintSubExpression:
 	RST_ExpEvaluate
 	CALL PrintInteger
 	
-	db 11h ; opcode for LXI D eats 2 bytes
-				 ; 3rd byte is NOP
+	STC
 PrintSubString:
-	CALL OutputString ; carry is clear on return
+	CNC OutputString ; carry is clear on return
 
 	; A is either Quote char or zero at this point
 	; (00000000 or 00100010) both even parity
@@ -1441,16 +1447,6 @@ GotoSub:
 	RZ
 	CALL Error
 
-ReturnSub:
-	; Expect stack size to be 6 or more
-	; any less and we have return without gosub
-	LXI H,-(STACK_INIT-6)-1
-	DAD SP
-	CC Error
-	
-	POP H	; Get return address first
-	POP B ; Get pointer to program loc to return to
-	PCHL ; instead of RET
 
 InputSub:
 
@@ -1557,6 +1553,15 @@ NextSubLoop:
 	
 	RET
 
+IfSub:
+	RST_ExpEvaluate
+	MOV A,D
+	ORA E
+	RNZ
+
+	; If DE zero then fall through to next line
+	JMP AdvanceToNextLineNum 
+	
 EndSub:
 	JMP Ready
 	; Hi byte of AdvanceToNextLineNum is 3
@@ -1614,14 +1619,16 @@ ListSub:
   JMP ListSubImpl
 
 LastStatement:
-IfSub:
-	RST_ExpEvaluate
-	MOV A,D
-	ORA E
-	RNZ
-
-	; If DE zero then fall through to next line
-	JMP AdvanceToNextLineNum 
+ReturnSub:
+	; Expect stack size to be 6 or more
+	; any less and we have return without gosub
+	LXI H,-(STACK_INIT-6)-1
+	DAD SP
+	CC Error
+	
+	POP H	; Get return address first
+	POP B ; Get pointer to program loc to return to
+	PCHL ; instead of RET
 	
 ; ( ) , TO STEP tokens must have values between 
 ; statements and functions
@@ -1723,6 +1730,8 @@ GetLineNum:
 	; Z clear if not successful, and BC points
 	; to the first byte of the line with number
 	; greater than the request
+	;
+	; Carry is always clear on return
 	
 	LXI B,PROG_BASE-1 ; 1 bytes before PROG_BASE
 
@@ -1749,7 +1758,8 @@ GetLineNumLoop:
 	
 ATNLN_RetNZ: ; shared code. Returns NZ if we know
 						 ; that A is non-zero
-	ORA L
+						 
+	ORA L			 ; Carry will be cleared
 
 	RET
 
@@ -1776,7 +1786,7 @@ AdvanceToNextLineNum:
 	; fell off end of program
 	
 	CPI LinenumSub&0ffh
-	RZ
+	RZ ; carry will be clear if we return here
 	
 	INX B
 	
