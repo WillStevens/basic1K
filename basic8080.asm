@@ -359,6 +359,9 @@
 ;			 remaining bug. 9 bytes free now, 5 of 
 ;			 which are contiguous at the end of the
 ;			 program.
+; 2024-03-29 Two bugs to fix : prompt appears
+; 		 twice after entering first line. 
+;			 detection of syntax errors is slow
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -978,18 +981,17 @@ GetLine:
 
 GetLineNoPrompt:
 
+	; A must not be 10
+	; it is zero after PutChar if falling
+	; through from GetLine.
+	; If called from InputSub it is 
 	PUSH H
-	
-	; A is zero at this point
-	; (needs to be <>newline character on fall 
-	; through to NLTest)
 
 FreshStart:
 
   LXI H,NoCharClass
 	
 NLTest:
-  MOV A,B
 	; check for newline
 	RST_CompareJump
 	DB 10,(NLTestTrue&0ffh)-1
@@ -1149,6 +1151,7 @@ AlphaClass:
 	;								token
 	; TokenClassEnd - if end of token
 	
+	MOV A,B
 	RST_JZPage
 	DB (NLTest&0ffh)-1
 	
@@ -1206,13 +1209,13 @@ StrCmp:
 	DB (Write_Shared_AtSP&0ffh)-1
 	
 	POP PSW
-	
+
 LookupToken:
 	LDAX D
-	INR A
-	INX D
-  JM LookupToken_Loop
-  JNZ LookupToken
+	RAL 
+	INR E ; Z set if end of TokenList
+  JNC LookupToken
+	JNZ LookupToken_Loop
 	
   ; didn't find it
   
@@ -1455,11 +1458,11 @@ InputSub:
   
   LXI H,INPUT_BUFFER
   PUSH B
-	
-POPHAssignToVar_Prefix:
 
 	PUSH H
 	
+	XRA A ; we don't want A to be 10 before
+				; tbis call, so set it to zero
 	CALL GetLineNoPrompt
 
   POP B
@@ -1575,7 +1578,7 @@ ExecuteProgram:
 	; at this location in memory
 	LXI B,PROG_BASE
 	dw Ready ; Ready must correspond to
-	         ; a hatmless instruction sequence
+	         ; a harmless instruction sequence
 
 ExecuteProgramLoop:
 	LDAX B
@@ -1652,7 +1655,7 @@ AbsSub:
 	; between first and last function
 LeftBraceToken:
 	RET
-	
+
 UsrSub:
 	XCHG
 	PCHL
@@ -1908,7 +1911,9 @@ List_Var:
   ADI '@'
   RST_PutChar
   RET 
-  
+
+	db 0,0,0,0,128 ; free space
+	
 ; byte before TokenList must have high bit set
 ; e.g. RET
   
@@ -1916,7 +1921,7 @@ List_Var:
 ; token A that is a left substring of another
 ; token B appears later in the list than B
 ; e.g. < is after <=
-	
+
 TokenList:
 	DB QuestionMarkToken&0ffh
 	DB '?'+128
@@ -1989,5 +1994,4 @@ TokenList:
 	DB '*'+128
 	DB DivSub&0ffh
 	DB '/'+128
-	DB 255 ; 255 can only occur at the end
 
