@@ -4,8 +4,8 @@
 40 LET V = 50 
 50 LET T = 0 
 100 PRINT "T:" , T , " Alt:" , A , " Vel:" , V , " Fuel:" , F , " Thr:" , B 
-111 IF F > 30 PRINT "Thrust (0-30)?" 
-112 IF F < 31 PRINT "Thrust (0-" , F , ")?" 
+111 IF F > 30 PRINT "Thrust (0-30)?",
+112 IF F < 31 PRINT "Thrust (0-" , F , ")?",
 113 INPUT B 
 114 IF B >= 0 IF B <= 30 IF B <= F GOTO 120 
 115 GOTO 111 
