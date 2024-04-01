@@ -15,9 +15,9 @@
 ; 
 ; Post-assembly checklist
 ;
-; 1. LineNumSub is >= address 223h
-; 2. DivSub is <= address 2ffh
-; 3. DivJzError is at address 3xxh
+; 1. LineNumSub is at address 223h
+; 2. DivSub is atvaddress 1ffh
+; 3. LO(AbsSub)>LO(NextSub)
 ; 4. In LineStartsWithInt, the jump to
 ;    DeleteProgramLine is on the same
 ;    page as DeleteProgramLine
@@ -25,7 +25,7 @@
 ; 6. In ClassLookup, check that QuoteClass
 ;    has LSBit different from othet class
 ;    routines.
-; 7. Ready is at address 00DE
+; 7. Ready is at address 00BA
 ; 8. Code before 'Ready:' does not overlap with
 ;    'Ready:', Can be seen from the HEX file.
 ;
@@ -362,6 +362,8 @@
 ; 2024-03-29 Two bugs to fix : prompt appears
 ; 		 twice after entering first line. 
 ;			 detection of syntax errors is slow
+; 2024-04-01 Fixed several bugs introduced above.
+;      Need to run all tests again.
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -657,9 +659,8 @@ SkipExpApplyOp:
 	
 	INX B
 	
-	; Code shared with ExpNegate
-	DB 021h ; OpCode for LXI H to mop up 
-					; INR A and LXI
+	; fall through
+	db 21h ; LXI H eats 2 bytes
 ExpNegate:
 	INR A
 	LXI D,0
@@ -733,10 +734,10 @@ FunctionCall:
 	; push return address
 	LXI D,ExpEvaluateOp
 	PUSH D
-	; A contains the address to call on page 2
+	; A contains the address to call on page 1
 	; push function address
 	MOV L,A
-	MVI H,PrintSub/256
+	MVI H,AbsSub/256
 	PUSH H
 	
 	; fall through
@@ -930,22 +931,7 @@ ReverseLoop:
 	
 	JMP ReverseLoop
 
-; This 8 byte routine can be moved anywhere to
-; fill holes. It needs a RET on the same
-; page to jump to
-OutputString:
-;Pointer in B points to string token marker
-	INX B
-OutputStringLoop:
-	RST_LDAXB_INXB_CPI
-	DB StringToken
-	RST_JZPage
-	DB (OutputStringRet&0ffh)-1
-OutputString_WithQuote:
-	RST_PutChar
-	RST_JZPage
-	DB (OutputStringLoop&0ffh)-1
-	
+
 ; GetLine sits entirely in page 1
 ; good - it uses RST_CompareJump in two
 ; places, so be careful if moving it
@@ -953,21 +939,13 @@ OutputString_WithQuote:
 ; as NoCharClass
 
 NLTestTrue:
-	; A contains 13 at this point
-	; we want to ooutput line feed (10)
-	; because H is 3, we can subtract this from A
-	;SUB H
-	;RST_PutChar
-	
 	; error if we are in the middle
 	; of a string
 	MOV A,L
-  RST_CompareJump
-	DB QuoteClassExpEnd&0ffh
-	DB (DivJZError-1)&0ffh
+	CPI QuoteClassExpEnd&0ffh
+	CZ Error
 	
 	POP H
-OutputStringRet:
 	RET
 
 GetLine:
@@ -981,18 +959,16 @@ GetLine:
 
 GetLineNoPrompt:
 
-	; A must not be 10
-	; it is zero after PutChar if falling
-	; through from GetLine.
-	; If called from InputSub it is 
 	PUSH H
 
+	MVI B,0
 FreshStart:
 
   LXI H,NoCharClass
 	
 NLTest:
 	; check for newline
+	MOV A,B
 	RST_CompareJump
 	DB 10,(NLTestTrue&0ffh)-1
 	
@@ -1009,14 +985,14 @@ NextCharLoop:
 	
   ; Do we have the same class as before?
   PUSH H
-	MVI L,(ClassLookup&0ffh)-1
+	LXI H,ClassLookup-1
 	; Test for quote first
 	; This doesn't save spave, but takes 3 bytes
 	; away from class lookup and puts them here
 	; so can be used to change odd/even of
 	; ...Class subroutines
-	RST_CompareJump
-	DB 34,(LC_QuoteTestTrue-1)&0ffh
+	;RST_CompareJump
+	;DB 34,(LC_QuoteTestTrue-1)&0ffh
 LookupClassLoop:
 	INR L
 	CMP M
@@ -1113,7 +1089,7 @@ QuoteClass:
   ; first time through A is zero 
 	; on fall A is even unless C is QuoteClass
 	
-	ANA H ; H is 3 
+	ANA H ; H is 1
 	
 	; Now Z is set if this was first Quote, or if
 	; we are in a string and haven't reached 
@@ -1151,7 +1127,6 @@ AlphaClass:
 	;								token
 	; TokenClassEnd - if end of token
 	
-	MOV A,B
 	RST_JZPage
 	DB (NLTest&0ffh)-1
 	
@@ -1227,15 +1202,41 @@ LookupToken:
 	RST_JZPage
 	DB (Write_Shared_Written&0ffh)-1
 
-DB QuoteClass&0ffh
-ClassLookup:
-DB 64,AlphaClass&0ffh
-DB 58,CompClass&0ffh
-DB 48,DigitClass&0ffh
-DB 33,LT0Class&0ffh
-DB 0,FreshStart&0ffh
+org 01bah
 
-org 01cdh
+AbsSub:
+	; A = right brace token, which has high bit
+	; set, so no need to negate DE if XRA with D
+	; still leaves high bit set
+	XRA D
+	RM
+	
+	RST_NegateDE
+	
+	; shared code. okay for this to go here
+	; because in ExpEvaluateNum, test for
+	; left brace is before test for token
+	; between first and last function
+LeftBraceToken:
+	RET
+
+UsrSub:
+	XCHG
+	PCHL
+
+
+RndSub:
+; LCG 
+; don't use low byte in return value.
+; Multiplier 47989 is mentioned here:
+; https://groups.google.com/g/prng/c/evszGs76o1w?pli=1
+
+	PUSH D
+	LHLD RNG_SEED
+	LXI D,47989
+	CALL MulSub ; A is zero after this
+	JMP RndSubImpl
+	
 ; Token values >= this are all operators
 Operators:
 	
@@ -1264,7 +1265,7 @@ EqualSub:
 	RST_CompareHLDE ; returns Z iff HL=DE
 BinReturn:
 	CMC
-	DB 3eh ; MVI A opcode to swallow next byte
+	DB 3eh ; MVI A opcode to eat next byte
 	
 NotEqualSub:
 	RST_CompareHLDE; returns Z iff HL=DE
@@ -1274,13 +1275,10 @@ NotEqualSub:
 	RET
   
 AddSub:
-	DB 0d2h	; opcode for JNC, to eat next 2 bytes
-					; (since carry is set when we reach
-					; AddSub)
+	DB 0d2h ; opcode for JNC to eat 2 bytes
 SubSub:
 	NOP
-NegateSub:	; This exists so that it can be equal 
-						; in precedence to * and /
+NegateSub:
 	RST_NegateDE
 	;Add DE to HL and keep in DE
 	DAD D
@@ -1461,8 +1459,6 @@ InputSub:
 
 	PUSH H
 	
-	XRA A ; we don't want A to be 10 before
-				; tbis call, so set it to zero
 	CALL GetLineNoPrompt
 
   POP B
@@ -1502,59 +1498,6 @@ LetSub:
 	
 	JMP POPHAssignToVar
 	
-NextSub:
-	POP H ; discard return address
-	; stack contains <SP> VL+1,S,-T,LS,EPL
-	POP H	; get VL+1
-	; stack contains VL+1 <SP> S,-T,LS,EPL
-	MOV D,M
-	DCX H
-	MOV E,M
-	
-	XTHL		; step is in HL, VL is in (SP)
-	; stack contains VL+1 <SP> VL, -T,LS,EPL
-	XCHG		; step is in DE, var value in HL
-	DAD D		; add step onto var
-	XCHG		; result is in DE, step is in HL
-	XTHL		; step is in (SP), VL is in HL
-	; stack contains VL+1 <SP> S, -T,LS,EPL
-	
-	MOV M,E ; put back into VL
-	INX H		; H = VL+1
-	MOV M,D	; DE now has loop var value (LV)
-	
-	POP PSW ; get step so that hi bit of A has
-					; sign of step
-	POP H		; get -T
-	; stack contains VL+1,S,-T <SP> LS,EPL
-	
-	DAD D 	; HL now has LV-T
-	
-	XRA H		; xor sign of step with
-					; sign of result
-	
-					; if result of xor above is 1
-					; then keep looping, or if HL
-					; is zero then keep looping
-					
-	POP D ; this is LoopStart
-	; stack contains VL+1,S,-T,LS <SP> EPL
-	
-	JM NextSubLoop
-	
-	MOV A,H
-	ORA L
-	RNZ
-	
-NextSubLoop:
-	
-	MOV B,D
-	MOV C,E
-	LXI H,-10
-	DAD SP
-	SPHL
-	
-	RET
 
 IfSub:
 	RST_ExpEvaluate
@@ -1621,7 +1564,6 @@ NewSub:
 ListSub:
   JMP ListSubImpl
 
-LastStatement:
 ReturnSub:
 	; Expect stack size to be 6 or more
 	; any less and we have return without gosub
@@ -1632,6 +1574,61 @@ ReturnSub:
 	POP H	; Get return address first
 	POP B ; Get pointer to program loc to return to
 	PCHL ; instead of RET
+
+LastStatement:
+NextSub:
+	POP H ; discard return address
+	; stack contains <SP> VL+1,S,-T,LS,EPL
+	POP H	; get VL+1
+	; stack contains VL+1 <SP> S,-T,LS,EPL
+	MOV D,M
+	DCX H
+	MOV E,M
+	
+	XTHL		; step is in HL, VL is in (SP)
+	; stack contains VL+1 <SP> VL, -T,LS,EPL
+	XCHG		; step is in DE, var value in HL
+	DAD D		; add step onto var
+	XCHG		; result is in DE, step is in HL
+	XTHL		; step is in (SP), VL is in HL
+	; stack contains VL+1 <SP> S, -T,LS,EPL
+	
+	MOV M,E ; put back into VL
+	INX H		; H = VL+1
+	MOV M,D	; DE now has loop var value (LV)
+	
+	POP PSW ; get step so that hi bit of A has
+					; sign of step
+	POP H		; get -T
+	; stack contains VL+1,S,-T <SP> LS,EPL
+	
+	DAD D 	; HL now has LV-T
+	
+	XRA H		; xor sign of step with
+					; sign of result
+	
+					; if result of xor above is 1
+					; then keep looping, or if HL
+					; is zero then keep looping
+					
+	POP D ; this is LoopStart
+	; stack contains VL+1,S,-T,LS <SP> EPL
+	
+	JM NextSubLoop
+	
+	MOV A,H
+	ORA L
+	RNZ
+	
+NextSubLoop:
+	
+	MOV B,D
+	MOV C,E
+	LXI H,-10
+	DAD SP
+	SPHL
+	
+	RET
 	
 ; ( ) , TO STEP tokens must have values between 
 ; statements and functions
@@ -1641,36 +1638,16 @@ StepToken equ LastStatement+2
 RightBraceToken equ LastStatement+3
 CommaToken equ LastStatement+4
 
-AbsSub:
-	; A = right brace token, which has high bit
-	; set, so no need to negate DE if XRA with D
-	; still leaves high bit set
-	XRA D
-	RM
-	RST_NegateDE
-	
-	; shared code. okay for this to go here
-	; because in ExpEvaluateNum, test for
-	; left brace is before test for token
-	; between first and last function
-LeftBraceToken:
-	RET
+ClassLookup:
+DB 64,AlphaClass&0ffh
+DB 58,CompClass&0ffh
+DB 48,DigitClass&0ffh
+DB 35,LT0Class&0ffh
+DB 34,QuoteClass&0ffh
+DB 33,LT0Class&0ffh
+DB 0,FreshStart&0ffh
 
-UsrSub:
-	XCHG
-	PCHL
-
-
-RndSub:
-; LCG 
-; don't use low byte in return value.
-; Multiplier 47989 is mentioned here:
-; https://groups.google.com/g/prng/c/evszGs76o1w?pli=1
-
-	PUSH D
-	LHLD RNG_SEED
-	LXI D,47989
-	CALL MulSub ; A is zero after this
+RndSubImpl:
 	XCHG
 	INX H
 	SHLD RNG_SEED
@@ -1683,6 +1660,22 @@ RndSub:
 	CALL DivideHL
   XCHG
   RET
+  
+; This 8 byte routine can be moved anywhere to
+; fill holes. It needs a RET on the same
+; page to jump to
+OutputString:
+;Pointer in B points to string token marker
+	INX B
+OutputStringLoop:
+	RST_LDAXB_INXB_CPI
+	DB StringToken
+	RST_JZPage
+	DB (OutputStringRet&0ffh)-1
+OutputString_WithQuote:
+	RST_PutChar
+	RST_JZPage
+	DB (OutputStringLoop&0ffh)-1
 
 ; This 20 byte routine can be moved as needed
 GetVarLocationBVar:
@@ -1717,6 +1710,7 @@ GetVarLocation:
 	INX H ; up 1 byte to avoid EndProgram marker
 	DAD D
 	DAD D
+OutputStringRet:
 	RET
 
 GetLineNum:
@@ -1911,8 +1905,6 @@ List_Var:
   ADI '@'
   RST_PutChar
   RET 
-
-	db 0,0,0,0,128 ; free space
 	
 ; byte before TokenList must have high bit set
 ; e.g. RET
