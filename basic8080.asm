@@ -11,7 +11,9 @@
 ; characters it receives back to the terminal.
 ; I believe that these settings are compatible
 ; with using a Teletype Model 33 in full duplex
-; mode.
+; mode. If using a VT100 terminal emulator, LNM
+; must be set so that pressing Return sends
+; CR+LF.
 ; 
 ; Post-assembly checklist
 ;
@@ -25,9 +27,10 @@
 ; 6. In ClassLookup, check that QuoteClass
 ;    has LSBit different from othet class
 ;    routines.
-; 7. Ready is at address 00BA
+; 7. Ready is at address 00BD
 ; 8. Code before 'Ready:' does not overlap with
 ;    'Ready:', Can be seen from the HEX file.
+; 9. AbsSub is at address 01BA
 ;
 ; Development log:
 ; 2023-03-03 About 450 bytes long
@@ -577,7 +580,7 @@ ExpEvaluateNum:
 	
 	; last function
 	CPI (RndSub+1)&0ffh
-	CNC Error
+	CNC Error 
 	; first function
 	CPI AbsSub&0ffh
 	JNC FunctionCall ; between RndSub and AbsSub
