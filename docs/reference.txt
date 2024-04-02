@@ -1,0 +1,112 @@
+Introduction
+------------
+
+1K Tiny BASIC is a subset of BASIC that
+supports integer arithmetic only and has
+no string handling capabilities.
+
+It aupports the statenents PRINT, LET,
+INPUT, IF, GOTO, GOSUB, RETURN, FOR,
+NEXT, RUN, LIST, NEW, END.
+
+Within expressions it supports arithmetic
+operators +, -, *, / and functions ABS,
+USR, RND. Comparision operators =, <>, <,
+<=, >, >= are also supported.
+
+There are 26 single letter variables A-Z
+and a single array @.Two system variables
+are also accessible from BASIC: ^ is the
+start address in memory of the array and _
+is the state of the RNG (Random Number
+Generator) used by the RND function.
+
+Multi-statement lines have no separator
+between successive statements. E.g.:
+
+10 PRINT "How many?", INPUT A
+
+is a valid multi-statement line.
+
+
+Statements
+----------
+
+PRINT
+-----
+
+Prints expressions or constant strings.
+The PRINT statement is followed by a
+comma separated list of expressions and
+strings. The items in tbe list are printed
+one after another with no spaces between
+them. If the list ends with a comma then
+no newline is printed.
+
+The PRINT statement by itself prints a
+newline.
+
+Examples:
+
+PRINT "Two plus two is ",2+2
+PRINT "Enter a number:",
+
+LET
+---
+
+Assigns a value to a variable.
+
+Examples:
+
+LET A=123
+LET @(4)=-2731
+
+
+INPUT
+-----
+
+Lets the user type in a number and assigns
+that number to a variable. INPUT doesn't
+display any prompt so it is up to the
+user to print a prompt.
+
+Examples:
+
+INPUT A
+PRINT "Thrust?", INPUT T
+
+
+IF
+--
+
+If an expression is not zero then execute
+the statements that follow, otherwise go
+to the next line.
+
+Examples:
+
+10 IF I<5 GOTO 30
+20 IF I>10 LET I=I-5 GOTO 60
+
+
+GOTO
+----
+
+Jump to the line number that follows. The
+line number can be an expression.
+
+Examples:
+
+GOTO 100
+GOTO 5*A+1000
+
+
+GOSUB and RETURN
+----------------
+
+Jump to the line number tbat follows,
+but when RETURN is encountered then
+continue executing the next statement.
+
+GOSUB and RETURN can be nested as many
+times as needed.
