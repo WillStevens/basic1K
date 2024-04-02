@@ -678,7 +678,7 @@ ExpNegate:
 	PUSH D							; operand
 
 	MOV L,A
-	MVI H,AddSub/256
+	INR H ; Assumes H was 0 and needs to be 1
 	PUSH H
 	
 	JMP ExpEvaluateNum 
@@ -735,12 +735,12 @@ ExpLeftBrace:
 	DCX B
 FunctionCall:
 	; push return address
-	LXI D,ExpEvaluateOp
-	PUSH D
+	LXI H,ExpEvaluateOp
+	PUSH H
 	; A contains the address to call on page 1
 	; push function address
 	MOV L,A
-	MVI H,AbsSub/256
+	INR H ; Assumes H was 0 and is now 1
 	PUSH H
 	
 	; fall through
@@ -773,7 +773,7 @@ Error:
 	; we need ready to be at an address
 	; corresponding to harmless opcodes when
 	; executed in ExecuteProgram
-org 00bdh
+org 00bbh
 Ready:
 	; Set stack pointer
 	; Do this every time to guard against
@@ -855,7 +855,7 @@ LineStartsWithInt:
 	PUSH D ; middle
 	
 	; carry is clear here from the call to
-	; GwrLineNum
+	; GetLineNum
 	
 	JMP Entry
 
@@ -949,7 +949,8 @@ NLTestTrue:
 	CZ Error
 	
 	POP H
-	RET
+	
+	JMP CRLF
 
 GetLine:
 	; HL points where we want the line to be
@@ -964,6 +965,9 @@ GetLineNoPrompt:
 
 	PUSH H
 
+	; is there a better way of setting B to a 
+	; non-newline? Any other regs known not
+	; to have this value?
 	MVI B,0
 FreshStart:
 
@@ -973,7 +977,7 @@ NLTest:
 	; check for newline
 	MOV A,B
 	RST_CompareJump
-	DB 10,(NLTestTrue&0ffh)-1
+	DB 13,(NLTestTrue&0ffh)-1
 	
 NextCharLoop:
 	; This code is compatable with Stefan Tramm's
@@ -1043,14 +1047,20 @@ NoCharClass:
   PCHL
   
 DigitClassNotEnd:
- 	PUSH H
+	;Code below does this in one fewer byte
+	PUSH H
+	MOV H,D
+	MOV L,E
+	
+ 	;PUSH D
+ 	;XTHL
+ 	
   ; A is zero at this point
   
   ; Accumulate the value into D
 
 	; Muliply by 10
-	MOV H,D
-	MOV L,E
+	
 	
 	DAD H
 	DAD H
@@ -1911,6 +1921,7 @@ List_Var:
 	
 ; byte before TokenList must have high bit set
 ; e.g. RET
+  
   
 ; order in this list must make sure that a
 ; token A that is a left substring of another
