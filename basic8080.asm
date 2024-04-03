@@ -7,13 +7,13 @@
 ;
 ; Assumes that outputting a newline requires
 ; CR and LF, and that pressing return on the
-; terminal sends CR and LF. 1K BASIC echoes all
+; terminal sends CR alone. 1K BASIC echoes all
 ; characters it receives back to the terminal.
 ; I believe that these settings are compatible
 ; with using a Teletype Model 33 in full duplex
 ; mode. If using a VT100 terminal emulator, LNM
-; must be set so that pressing Return sends
-; CR+LF.
+; must be reset so that pressing Return sends
+; CR alone.
 ; 
 ; Post-assembly checklist
 ;
@@ -27,7 +27,7 @@
 ; 6. In ClassLookup, check that QuoteClass
 ;    has LSBit different from othet class
 ;    routines.
-; 7. Ready is at address 00BD
+; 7. Ready is at address 00BB
 ; 8. Code before 'Ready:' does not overlap with
 ;    'Ready:', Can be seen from the HEX file.
 ; 9. AbsSub is at address 01BA
@@ -367,6 +367,9 @@
 ;			 detection of syntax errors is slow
 ; 2024-04-01 Fixed several bugs introduced above.
 ;      Need to run all tests again.
+; 2024-04-03 Changed newline behaviour so that
+;      VT100 terminals require LNM reset rather
+;      than set.
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -427,10 +430,11 @@ ORG 00h
 	; address, then POP H from
 	; the stack and store it in PROG_PTR, then
 	; RET will jump to Ready.
-	; We must ensure that Ready is at address
-	; 00DE for this to work, because the
-	; sequence DE00 executes SBI 0, which is 
-	; harmless.
+	; We must ensure that Ready is at an address
+	; that corresponds to a harmless instruction.
+	; 00B8 to 00BF is a good range to aim for
+	; because B8-BF are CMP instructions which
+	; affect flags and nothing else.
 
 	LXI SP,ExecuteProgram+1
 	POP H
@@ -1048,6 +1052,11 @@ NoCharClass:
   
 DigitClassNotEnd:
 	;Code below does this in one fewer byte
+	; but need to save another byte too
+	; can we do this by swapping role of
+	; B and C, then doing:
+	; DAD B, LXI D,<compensator>, DAD D
+	; (5 bytes rathet than 6)
 	PUSH H
 	MOV H,D
 	MOV L,E
@@ -1301,11 +1310,13 @@ NegateSub:
 
 MulSub:
 ; 20 bytes
-; multiple HL and DE into DE, preserving B
+; multiply HL and DE into DE, preserving B
 	PUSH B
 	MOV B,H
 	MOV C,L
 
+; TODO can we switch the role of HL and DE
+; to avoid the extra XCHG before RET
 Multiply:
 ;multiply BC and DE into DE
 	MVI A,16
