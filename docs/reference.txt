@@ -29,6 +29,36 @@ between successive statements. E.g.:
 is a valid multi-statement line.
 
 
+Entering and editing programs
+-----------------------------
+
+This works just like most other 1970s
+and 80s microcomputer BASICs. There is a
+single BASIC program in memory. When the
+system starts, the program is empty.
+Entering a line prefixed with a line
+number inserts that line into the program
+in line-number order. For example:
+
+20 PRINT A
+10 LET A=123
+
+LIST
+
+shows
+
+10 LET A=123
+20 PRINT A
+
+Lines can be deleted by entering the line
+number alone.
+
+In 1K Tiny BASIC lines can't be
+overwritten : to replace a line you must
+first delete the line before entering the
+new line.
+
+
 Statements
 ----------
 
@@ -183,8 +213,17 @@ Functions
 ABS
 ---
 
+Returns the absolute value of the
+parameter. E.g.
+
+PRINT ABS(-3)
+
+prints 3
+
+
 RND
 ---
+
 
 USR
 ---
