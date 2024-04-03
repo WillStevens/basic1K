@@ -110,3 +110,81 @@ continue executing the next statement.
 
 GOSUB and RETURN can be nested as many
 times as needed.
+
+Examples:
+
+10 GOSUB 100
+20 END
+100 PRINT "Hello"
+110 RETURN
+
+FOR and NEXT
+------------
+
+Iterate over lines between FOR and NEXT,
+incrementing or decrementing the value of
+the loop variable on each iteration.
+
+STEP can be used to specify how much the
+loop variable should increment by.
+
+The loop ends after the value of the loop
+variable matches or jumps over the TO 
+value.
+
+The NEXT statement doesn't have a 
+variable name following it.
+
+Examples:
+
+10 FOR I=1 TO 10
+20 PRINT I
+30 NEXT
+
+10 FOR I=10 TO -10 STEP -3
+20 PRINT I
+30 NEXT
+
+
+END
+---
+
+Ends the program.
+
+Examples:
+
+10 GOSUB 100
+20 END
+100 PRINT "Hello"
+110 RETURN
+
+
+NEW
+---
+
+Deletes the program.
+
+
+LIST
+----
+
+Lists the program.
+
+
+RUN
+---
+
+Runs the program.
+
+
+Functions
+---------
+
+ABS
+---
+
+RND
+---
+
+USR
+---
