@@ -11,17 +11,17 @@ will be out-of-sync with the source code
 if I do not have time to update it, but
 for all releases it will be up to date.
 
-Error codes as of 1st April 2024:
+Error codes as of 4th April 2024:
 
 E68 & E81 - expecting an expression, but expression not found or incomplete.
 
-E138 - expecting TO in FOR statement but TO not found
+E137 - expecting TO in FOR statement but TO not found
 
-E175 - expecting left bracket
+E173 - expecting left bracket
 
-E239 - attempt to overwrite line. A line must be deleted and reentered.
+E237 - attempt to overwrite line. A line must be deleted and reentered.
 
-E304 - missing " at end of string
+E302 - missing " at end of string
 
 E442 - missing ) in call to ABS
 
@@ -41,4 +41,4 @@ E657 - syntax error (often caused by misspelt statement), or unexpected token en
 
 E677 - RETURN without GOSUB
 
-E762 - expecting variable name, but no variable name found.
+E752 - expecting variable name, but no variable name found.
