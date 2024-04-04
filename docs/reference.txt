@@ -210,8 +210,8 @@ Runs the program.
 Functions
 ---------
 
-ABS
----
+ABS(X)
+------
 
 Returns the absolute value of the
 parameter. E.g.
@@ -221,9 +221,18 @@ PRINT ABS(-3)
 prints 3
 
 
-RND
----
+RND(X)
+------
+
+Returns a random integer in the range 0
+to X-1. X must be betwern 1 and 256.
 
 
-USR
----
+USR(X)
+------
+
+Calls the machine code at address X.
+The machine code routine must take care
+of preserving the BC register pair, and 
+returning a value in the DE register 
+pair.
