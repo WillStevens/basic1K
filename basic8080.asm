@@ -370,7 +370,12 @@
 ; 2024-04-03 Changed newline behaviour so that
 ;      VT100 terminals require LNM reset rather
 ;      than set.
-
+; 2024-04-04 Reclaimed 2 bytes in
+;      DigitClassNotEnd. Used those two bytes to
+;      add a colon token. It can be used as a 
+;      statement separator in multi-statement
+;      lines.
+;
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
 ; 1K RAM from 0400h-0800h
@@ -972,14 +977,14 @@ GetLineNoPrompt:
 	; is there a better way of setting B to a 
 	; non-newline? Any other regs known not
 	; to have this value?
-	MVI B,0
+	MVI C,0
 FreshStart:
 
   LXI H,NoCharClass
 	
 NLTest:
 	; check for newline
-	MOV A,B
+	MOV A,C
 	RST_CompareJump
 	DB 13,(NLTestTrue&0ffh)-1
 	
@@ -991,7 +996,7 @@ NextCharLoop:
 	RST_JZPage
 	db (NextCharLoop&0ffh)-1
 	IN 1
-	MOV B,A
+	MOV C,A
 	OUT 1 ; echo
 	
   ; Do we have the same class as before?
@@ -1010,12 +1015,12 @@ LookupClassLoop:
 	INR L
 	JC LookupClassLoop
 LC_QuoteTestTrue:
-	MOV C,M
+	MOV B,M
 	POP H
 	
-  ; are L and C equal?
+  ; are L and B equal?
   MOV A,L
-  XRA C
+  XRA B
   ; Z if they are equal, NZ if not
   
   PCHL ; Jump based on previous CharClass pointer 
@@ -1043,7 +1048,7 @@ Write_Shared_Written:
   XTHL
 
 NoCharClass:
-  MOV L,C
+  MOV L,B
   XRA A ; set Z
   MOV D,A ; reset state information
   MOV E,A
@@ -1051,18 +1056,9 @@ NoCharClass:
   PCHL
   
 DigitClassNotEnd:
-	;Code below does this in one fewer byte
-	; but need to save another byte too
-	; can we do this by swapping role of
-	; B and C, then doing:
-	; DAD B, LXI D,<compensator>, DAD D
-	; (5 bytes rathet than 6)
-	PUSH H
-	MOV H,D
-	MOV L,E
 	
- 	;PUSH D
- 	;XTHL
+ 	PUSH D
+ 	XTHL
  	
   ; A is zero at this point
   
@@ -1078,10 +1074,11 @@ DigitClassNotEnd:
 	
 	; Add in the new digit
 	
-	MOV D,A
-	MOV A,B
-	ANI 0fh
-	MOV E,A
+	DAD B
+	; Because B has a value and C has the digit
+	; value+48, we need to subtract those things
+	; from H
+	LXI D,-((DigitClass&0ffh)*256+48)
 	DAD D
 	
 	XCHG
@@ -1093,7 +1090,7 @@ DigitClassNotEnd:
 QuoteClassExpEnd:
   
   ; A is equal to:
-	; char class (C) XOR QuoteCharClassExpEnd
+	; char class (B) XOR QuoteCharClassExpEnd
 	
 	; so long as QuoteCharClass is the only class
 	; with an odd address or the only one
@@ -1109,7 +1106,7 @@ QuoteClass:
   DCR L ; set to QuoteClassExpEnd
   
   ; first time through A is zero 
-	; on fall A is even unless C is QuoteClass
+	; on fall A is even unless B is QuoteClass
 	
 	ANA H ; H is 1
 	
@@ -1130,7 +1127,7 @@ CompClass:
 AlphaClass:
 	
 	XTHL
-	MOV M,B
+	MOV M,C
 	INX H
 	XTHL
 	
@@ -1224,7 +1221,7 @@ LookupToken:
 	RST_JZPage
 	DB (Write_Shared_Written&0ffh)-1
 
-org 01bah
+org 01b8h
 
 AbsSub:
 	; A = right brace token, which has high bit
@@ -1257,6 +1254,8 @@ RndSub:
 	LHLD RNG_SEED
 	LXI D,47989
 	CALL MulSub ; A is zero after this
+	XCHG
+	INX H
 	JMP RndSubImpl
 	
 ; Token values >= this are all operators
@@ -1403,6 +1402,7 @@ DivNoRestore:
 LineNumSub:
 	INX B
 	INX B
+StatementSepSub:
 	RET
 	
 PrintSub:
@@ -1672,8 +1672,6 @@ DB 33,LT0Class&0ffh
 DB 0,FreshStart&0ffh
 
 RndSubImpl:
-	XCHG
-	INX H
 	SHLD RNG_SEED
 	; Use only the high byte to get a value
 	; between 0 and 255
@@ -1712,7 +1710,7 @@ GetVarLocationBVar:
 GetVarLocation:
 ; A should contain a var token
 ; and B points to tbe location after
-; the var token
+; the var token (or array insex expression)
 ; return with var address in HL
 ; and B pointing to next char
 ; A will never be 255 on return
@@ -1754,7 +1752,7 @@ GetLineNum:
 	;
 	; Carry is always clear on return
 	
-	LXI B,PROG_BASE-1 ; 1 bytes before PROG_BASE
+	LXI B,PROG_BASE-1
 
 GetLineNumLoop:
 	CALL ATNLN_INXB ; has one INX B preceeding
@@ -1895,7 +1893,7 @@ PrintInteger:
 	RST_NegateDE
 	
 PrintIntegerLoop:
-	; need HL to be -ve here, so that it can
+	; DE is -ve here, so that we can
 	; handle -32768
 	
 	XCHG
@@ -1906,8 +1904,8 @@ PrintIntegerLoop:
 	; DE contains the quotient
 
 	MVI A,'0'
-	SUB L
-	PUSH PSW ; push onto stack
+	SUB L ; L is -ve, so this adds upto 9 to '0'
+	PUSH PSW ; push digit onto stack
 	
 	; if DE is zero we are done
 	MOV A,D
@@ -1924,7 +1922,7 @@ PrintIntegerLoop2:
 List_String:
 	CALL OutputString_WithQuote
 
-	DB 011h ; LXI D skips 2 bytes
+	DB 011h ; LXI D eats 2 bytes
 List_Var:
   ADI '@'
   RST_PutChar
@@ -1932,8 +1930,7 @@ List_Var:
 	
 ; byte before TokenList must have high bit set
 ; e.g. RET
-  
-  
+ 
 ; order in this list must make sure that a
 ; token A that is a left substring of another
 ; token B appears later in the list than B
@@ -1942,6 +1939,8 @@ List_Var:
 TokenList:
 	DB QuestionMarkToken&0ffh
 	DB '?'+128
+	DB StatementSepSub&0ffh
+	DB ':'+128
 	DB PrintSub&0ffh
 	DB "PRIN",'T'+128
 	DB LetSub&0ffh
@@ -1962,25 +1961,18 @@ TokenList:
 	DB "I",'F'+128
 	DB EndSub&0ffh
 	DB "EN",'D'+128
-	
-; Before this are keywords allowed at run-time
   DB ExecuteProgram&0ffh
 	DB "RU",'N'+128
 	DB ListSub&0ffh
 	DB "LIS",'T'+128
 	DB NewSub&0ffh
 	DB "NE",'W'+128
-	
-; before operators are non-statement
-; non-operator tokens
-
 	DB AbsSub&0ffh
 	DB "AB",'S'+128
 	DB UsrSub&0ffh
 	DB "US",'R'+128
 	DB RndSub&0ffh
 	DB "RN",'D'+128
-	
 	DB ToToken&0ffh
 	DB "T",'O'+128
 	DB StepToken&0ffh
