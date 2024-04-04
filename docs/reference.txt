@@ -21,12 +21,17 @@ start address in memory of the array and _
 is the state of the RNG (Random Number
 Generator) used by the RND function.
 
-Multi-statement lines have no separator
-between successive statements. E.g.:
+Multi-statement lines can be written 
+with no separator between successive
+statements. E.g.:
 
 10 PRINT "How many?", INPUT A
 
 is a valid multi-statement line.
+
+For compatibility with other BASICs, a
+colon may also be used to separate
+statements in multi-statement lines.
 
 
 Entering and editing programs
