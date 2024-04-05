@@ -1,0 +1,70 @@
+1. Initial testing to be run manually
+
+Tests covering simple functionality needed for later tests
+
+1.1
+
+PRINT 1
+Result: 1
+
+1.2
+
+PRINT 2+3
+Result: 5
+
+1.3
+
+PRINT 1+2*3
+Result: 7
+
+1.4
+
+PRINT (1+2)*3
+Result: 6
+
+1.5
+
+LET A=123
+PRINT A
+Result: 123
+
+1.6
+
+1 PRINT 2
+3 PRINT 4
+LIST
+RUN
+Result: Correct listing, then:
+2
+4
+
+1.7
+
+1 PRINT 2
+3 PRINT 4
+1
+LIST
+RUN
+Result: Line 3 listed, then: 4
+
+1.8
+
+1 PRINT 2
+3 PRINT 4
+2 PRINT 5
+LIST
+RUN
+Result: Lines listed in order, then:
+2
+5
+4
+
+1.9
+
+10 INPUT A
+20 PRINT A
+Result: The number that was input (try both +ve and -ve numbers)
+
+1.10 Error tests
+
+See errorcodes.txt - try to generate each of the error codes in turn.
