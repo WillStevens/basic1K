@@ -1,0 +1,44 @@
+This file lists the meaning of each
+error code that 1K Tiny BASIC can produce.
+
+Because error codes are not constant
+across 1K Tiny BASIC versions (the error
+code number is the address after the call
+to 'Error') this list needs to be updated
+whenever there is a significant code
+change. It is possible that this list
+will be out-of-sync with the source code
+if I do not have time to update it, but
+for all releases it will be up to date.
+
+Error codes as of 4th April 2024:
+
+E68 & E81 - expecting an expression, but expression not found or incomplete.
+
+E137 - expecting TO in FOR statement but TO not found
+
+E173 - expecting left bracket
+
+E237 - attempt to overwrite line. A line must be deleted and reentered.
+
+E302 - missing " at end of string
+
+E442 - missing ) in call to ABS
+
+E445 - missing ) in expression
+
+E446 - missing ) in call to USR
+
+E448 - missing ) in call to RND
+
+E525 - divide by zero
+
+E597 - line number not found in GOTO or GOSUB
+
+E630 - expecting = sign in LET or FOR statement
+
+E657 - syntax error (often caused by misspelt statement), or unexpected token encountered when expecting statement
+
+E677 - RETURN without GOSUB
+
+E752 - expecting variable name, but no variable name found.
