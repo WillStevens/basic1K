@@ -375,7 +375,9 @@
 ;      add a colon token. It can be used as a 
 ;      statement separator in multi-statement
 ;      lines.
-;
+; 2024-04-10 Modified PrintSub so that it no
+;      longer uses parity bit and should work
+;      on Z80
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
 ; 1K RAM from 0400h-0800h
@@ -1408,9 +1410,8 @@ StatementSepSub:
 PrintSub:
 PrintSubLoop:
 	; on call HL is address of PrintSub
-	; so H has odd parity
+	; so H=1
 	; on subsequent passes H = 0 or QuoteChar
-	; so H has even parity
 	LDAX B
 	
 	SUI StringToken
@@ -1421,11 +1422,8 @@ PrintSubLoop:
 	; next token after StringToken
 	CPI (LastStatement-StringToken+1)&0ffh
 	
-	INR H ; doesn't affect carry
-				; parity will be even if we've just
-				; entered subroutine.
-				; odd otherwise
-	
+	; Set Z if we want a newline
+	DCR H
 	JC PrintSubEnd
 	
 PrintSubExpression:
@@ -1436,9 +1434,7 @@ PrintSubExpression:
 PrintSubString:
 	CNC OutputString ; carry is clear on return
 
-	; A is either Quote char or zero at this point
-	; (00000000 or 00100010) both even parity
-	MOV H,A
+	MOV H,A ; A is 0 or QuoteChar
 	
 	RST_LDAXB_INXB_CPI
 	DB CommaToken
@@ -1446,11 +1442,15 @@ PrintSubString:
 	DB (PrintSubLoop&0ffh)-1
 	
 	DCX B
-	DCR H ; make sure that newline is printed when
-				; we fall through, parity will be even
+	
+	; Got to end of print statement with no comma
+	; so we want to print a newline.
+	
+	XRA A
+	
 PrintSubEnd:
-	RPO   ; don't print newline if we've just had
-				; comma
+	RNZ   ; don't print newline if we've just had
+			 ; comma
 CRLF:
 	MVI A,13
 	RST_PutChar
