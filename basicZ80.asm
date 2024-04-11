@@ -675,18 +675,9 @@ NoCharClass:
   JP (HL)
   
 DigitClassNotEnd:
-	;Code below does this in one fewer byte
-	; but need to save another byte too
-	; can we do this by swapping role of
-	; B and C, then doing:
-	; DAD B, LXI D,<compensator>, DAD D
-	; (5 bytes rathet than 6)
-	PUSH HL
-	LD H,D
-	LD L,E
 	
- 	;PUSH D
- 	;XTHL
+ 	PUSH DE
+ 	EX (SP),HL
  	
   ; A is zero at this point
   
@@ -701,10 +692,11 @@ DigitClassNotEnd:
 	
 	; Add in the new digit
 	
-	LD D,A
-	LD A,B
-	AND 0fh
-	LD E,A
+	ADD HL,BC
+	; Because B has a value and C has the digit
+	; value+48, we need to subtract those things
+	; from HL
+	LD DE,-((DigitClass&0ffh)*256+48)
 	ADD HL,DE
 	
 	EX DE,HL
@@ -843,7 +835,7 @@ LookupToken:
 	LD (HL),QuestionMarkToken&0ffh
 	JR Z,Write_Shared_Written
 
-org 01bah
+org 01bch
 
 AbsSub:
 	; A = right brace token, which has high bit
@@ -988,7 +980,7 @@ DivLoop:
 	RRA   ; look for mismatch between carry and
 				; bit 7 of D to detect overflow/underflow
 	XOR D
-	JP DivLoop
+	JP P,DivLoop
 
 	; if HL is zero then it must have been a negative number originally, and the remainder is zero, so don't make any change to HL, but increment quotient by 1
 	
@@ -1021,9 +1013,9 @@ LineNumSub:
 PrintSub:
 PrintSubLoop:
 	; on call HL is address of PrintSub
-	; so H has odd parity
+	; so H=1
 	; on subsequent passes H = 0 or QuoteChar
-	; so H has even parity
+	
 	LD A,(BC)
 	
 	SUB StringToken
@@ -1033,10 +1025,8 @@ PrintSubLoop:
 	; next token after StringToken
 	CP (LastStatement-StringToken+1)&0ffh
 	
-	INC HL 	; doesn't affect carry
-					; parity will be even if we've just
-					; entered subroutine.
-					; odd otherwise
+	DEC H   ; doesn't affect carry
+					; Z set if we need a newline
 	
 	JR C,PrintSubEnd
 	
@@ -1048,20 +1038,19 @@ PrintSubExpression:
 PrintSubString:
 	CALL NC,OutputString ; carry is clear on return
 
-	; A is either Quote char or zero at this point
-	; (00000000 or 00100010) both even parity
-	LD H,A
+	LD H,A ; A is 0 or QuoteChar
 	
 	RST_LDAXB_INXB_CPI
 	DB CommaToken
 	JR Z,PrintSubLoop
 	
 	DEC BC
-	DEC H ; make sure that newline is printed when
-				; we fall through, parity will be even
+	
+	XOR A
+	
 PrintSubEnd:
-	RET PO ; don't print newline if we've just had
-				; comma
+	RET NZ ; don't print newline if we've just had
+				 ; comma
 CRLF:
 	LD A,13
 	RST_PutChar
@@ -1541,6 +1530,8 @@ List_Var:
 ; token A that is a left substring of another
 ; token B appears later in the list than B
 ; e.g. < is after <=
+
+org 038eh
 
 TokenList:
 	DB QuestionMarkToken&0ffh
