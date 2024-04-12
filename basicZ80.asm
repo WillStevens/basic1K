@@ -22,6 +22,8 @@
 ;            using LDIR/LDDR for program
 ;            editing. Untested, not expected
 ;            to work yet.
+; 2024-04-12 Changed I/O to support Altair32
+;            emulator, which can use a Z80
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -610,11 +612,11 @@ NLTest:
 	DB 13,(NLTestTrue&0ffh)-1
 	
 NextCharLoop:
-	; This code is compatable with Stefan Tramm's
-	; 8080 emulator
+	; This code is compatable with Altair32
+	; emulator
 	IN A,(0)
-	AND A
-	JR Z,NextCharLoop
+	ANI 1
+	JR NZ,NextCharLoop
 	IN A,(1)
 	LD B,A
 	OUT (1),A ; echo
