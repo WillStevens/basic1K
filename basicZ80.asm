@@ -615,7 +615,7 @@ NextCharLoop:
 	; This code is compatable with Altair32
 	; emulator
 	IN A,(0)
-	ANI 1
+	AND 1
 	JR NZ,NextCharLoop
 	IN A,(1)
 	LD B,A
