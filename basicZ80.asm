@@ -1485,7 +1485,7 @@ PrintInteger:
 	OR D			; S is set if -ve
 	RST_NegateDE
 	
-	JP PrintIntegerLoop
+	JP P,PrintIntegerLoop
 	LD A,'-'
 	RST_Putchar
 	RST_NegateDE
