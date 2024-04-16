@@ -1446,7 +1446,7 @@ List_Token_Loop:
   LD D,(HL)
   INC D
   INC HL
-  JP List_Token_Loop
+  JP P,List_Token_Loop
   
 List_Token:
 	; on entry, A contains the token
@@ -1461,9 +1461,8 @@ List_Token_String_Loop:
   RST_PutChar
   OR (HL)
   INC HL
-  JP List_Token_String_Loop
-  
-  RET
+  RET M
+  JR List_Token_String_Loop
 	
 List_LineNum:
 	CALL CRLF
@@ -1494,7 +1493,7 @@ PrintIntegerLoop:
 	; need HL to be -ve here, so that it can
 	; handle -32768
 	
-	EX (SP),HL
+	EX DE,HL
 	LD DE,10
 	
 	CALL DivideHL
