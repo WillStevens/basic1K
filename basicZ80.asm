@@ -597,17 +597,17 @@ GetLineNoPrompt:
 
 	PUSH HL
 
-	; is there a better way of setting B to a 
+	; is there a better way of setting C to a 
 	; non-newline? Any other regs known not
 	; to have this value?
-	LD B,0
+	LD C,0
 FreshStart:
 
   LD HL,NoCharClass
 	
 NLTest:
 	; check for newline
-	LD A,B
+	LD A,C
 	RST_CompareJump
 	DB 13,(NLTestTrue&0ffh)-1
 	
@@ -618,7 +618,7 @@ NextCharLoop:
 	AND 1
 	JR NZ,NextCharLoop
 	IN A,(1)
-	LD B,A
+	LD C,A
 	OUT (1),A ; echo
 	
   ; Do we have the same class as before?
@@ -637,12 +637,12 @@ LookupClassLoop:
 	INC L
 	JR C,LookupClassLoop
 LC_QuoteTestTrue:
-	LD C,(HL)
+	LD B,(HL)
 	POP HL
 	
-  ; are L and C equal?
+  ; are L and B equal?
   LD A,L
-  XOR C
+  XOR B
   ; Z if they are equal, NZ if not
   
   JP (HL) ; Jump based on previous CharClass pointer 
@@ -669,7 +669,7 @@ Write_Shared_Written:
   EX (SP),HL
 
 NoCharClass:
-  LD L,C
+  LD L,B
   XOR A ; set Z
   LD D,A ; reset state information
   LD E,A
@@ -710,7 +710,7 @@ DigitClassNotEnd:
 QuoteClassExpEnd:
   
   ; A is equal to:
-	; char class (C) XOR QuoteCharClassExpEnd
+	; char class (B) XOR QuoteCharClassExpEnd
 	
 	; so long as QuoteCharClass is the only class
 	; with an odd address or the only one
@@ -747,7 +747,7 @@ CompClass:
 AlphaClass:
 	
 	EX (SP),HL
-	LD (HL),B
+	LD (HL),C
 	INC HL
 	EX (SP),HL
 	
