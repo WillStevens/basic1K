@@ -24,6 +24,8 @@
 ;            to work yet.
 ; 2024-04-12 Changed I/O to support Altair32
 ;            emulator, which can use a Z80
+; 2024-04-17 Several bug fixes. Progressing
+;            towards a working version
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -119,8 +121,8 @@ ORG 10h
 	EX (SP),HL
 	CP (HL)
 CompareJump_Skip:
-ExpApplyOp: ; shared code
 	INC HL
+ExpApplyOp: ; shared code
 	EX (SP),HL
 	RET
 	
@@ -209,18 +211,17 @@ ExpEvaluateNum:
 	
 	; last function
 	CP (RndSub+1)&0ffh
-	CALL NC,Error 
+	JR NC,Error 
 	; first function
 	CP AbsSub&0ffh
 	JR NC,FunctionCall ; between RndSub and AbsSub
 	
 	CP IntegerToken
-	JR C,ExpVar
-	
 	; Integer token is one more than last var
 	; token so if carry is set then it is a var
+	JR C,ExpVar
 	
-	CALL NZ,Error
+	JR NZ,Error
 
 	; Fall through to ExpInteger
 ExpInteger:
@@ -301,8 +302,7 @@ ExpNegate:
 											; after operator is called
 	PUSH HL
 	
-	; Put 0 onto stack and operator onto
-	; operator stack
+	; Push operand and operator onto the stack
 	
 	PUSH DE     			  ; operand
 
@@ -391,6 +391,7 @@ ExpBracketedB:
 	RET Z
 	
 	; fall through
+	
 
 ;Display error code and go back to line entry
 Error:
@@ -1142,8 +1143,7 @@ EndProgram equ EndSub-1
 	
 ExecuteProgram:
 	; Point BC to first line
-	; skip over the line number
-	LD BC,PROG_BASE+3
+	LD BC,PROG_BASE
 
 ExecuteProgramLoop:
 	LD A,(BC)
