@@ -349,6 +349,9 @@ ForWithStep:
 	INC BC
 	RST_ExpEvaluate
 	
+	; TODO on Z80 we can do POP AF, then
+	; push it back belown instead of DEC SP*2
+	; to save a byte
 	POP HL
 	POP HL  ; H contains VL+1
 	
@@ -649,7 +652,10 @@ LC_QuoteTestTrue:
   JP (HL) ; Jump based on previous CharClass pointer 
 
 DigitClass:
-	JR Z,DigitClassNotEnd
+	; Keep tbis as a 3-byte instruction to ensure
+	; that QuoteClass LSB is different from
+	; all other class subroutines
+	JP Z,DigitClassNotEnd
   
 DigitClassEnd:
   ; Write token into program
