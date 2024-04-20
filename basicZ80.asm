@@ -26,6 +26,9 @@
 ;            emulator, which can use a Z80
 ; 2024-04-17 Several bug fixes. Progressing
 ;            towards a working version
+; 2024-04-20 Fixed introduced bug where byte 
+;            before TolenList did not have high
+;            bit set.
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -1282,9 +1285,10 @@ RndSubImpl:
 	; Use only the high byte to get a value
 	; between 0 and 255
 	LD L,H
-	LD H,A
+	LD H,A ; 
 	POP DE
 	
+	; TODO if implementing modulus operator, this can be the enty point
 	CALL DivideHL
   EX DE,HL
   RET
@@ -1538,6 +1542,10 @@ List_Var:
 ; token B appears later in the list than B
 ; e.g. < is after <=
 
+org 038dh
+  DB 80h ; can delete this if we make sure this
+         ; byte is RET
+  
 org 038eh
 
 TokenList:
