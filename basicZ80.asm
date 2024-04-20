@@ -29,6 +29,7 @@
 ; 2024-04-20 Fixed introduced bug where byte 
 ;            before TolenList did not have high
 ;            bit set.
+; 2024-04-21 Added PEEK function
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -847,7 +848,7 @@ LookupToken:
 	LD (HL),QuestionMarkToken&0ffh
 	JR Z,Write_Shared_Written
 
-org 01bch
+org 01b8h
 
 AbsSub:
 	; A = right brace token, which has high bit
@@ -868,6 +869,12 @@ LeftBraceToken:
 UsrSub:
 	EX DE,HL
 	JP (HL)
+	
+PeekSub:
+	EX DE,HL
+	LD E,(HL)
+	DEC D
+	RET
 
 RndSub:
 ; LCG 
@@ -1542,11 +1549,11 @@ List_Var:
 ; token B appears later in the list than B
 ; e.g. < is after <=
 
-org 038dh
+org 0388h
   DB 80h ; can delete this if we make sure this
          ; byte is RET
   
-org 038eh
+org 0389h
 
 TokenList:
 	DB QuestionMarkToken&0ffh
@@ -1587,6 +1594,8 @@ TokenList:
 	DB "AB",'S'+128
 	DB UsrSub&0ffh
 	DB "US",'R'+128
+	DB PeekSub&0ffh
+	DB "PEE",'K'+128
 	DB RndSub&0ffh
 	DB "RN",'D'+128
 	
