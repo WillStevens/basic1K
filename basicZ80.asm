@@ -30,6 +30,7 @@
 ;            before TolenList did not have high
 ;            bit set.
 ; 2024-04-21 Added PEEK function
+; 2024-04-24 Put in faster DivSub. 15 bytes left
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -848,12 +849,11 @@ LookupToken:
 	LD (HL),QuestionMarkToken&0ffh
 	JR Z,Write_Shared_Written
 
-org 01b8h
-
+org 01b3h
+AbsSubEx:
+	EX DE,HL
 AbsSub:
-	; A = right brace token, which has high bit
-	; set, so no need to negate DE if XRA with D
-	; still leaves high bit set
+	XOR A
 	XOR D
 	RET M
 	
@@ -963,63 +963,62 @@ DontAdd:
 	EX DE,HL
 	POP BC
 	RET
-	
+
+; Version of DivSub based on 16-bit division
+; from here:
+; https://www.cpcwiki.eu/index.php/Programming:Integer_Division
+
 DivSub:
 ;Divide HL by DE
 ;Remainder in HL 
 ;Result in DE
+	PUSH BC
 
-DivideHL:
-;Divide HL by DE
-	; Make HL and DE different signs
-  LD A,H
-  CALL AbsSub
+	LD A,E
+	OR D
+	CALL Z,Error
+
+	; Are signs the same?
+	LD A,D
+	XOR H
 	PUSH AF
 	
-;Divide HL by DE
-;Assuming that HL and DE are different signs
-
-	PUSH BC
-	LD BC,0ffffh
-	
-; Do the test for zero here because we want the
-; CZ to be on page 3
-; This means that divide by zero and unterminated
-; string both have tbe same error code, but kt
-; will be obvious to the programmer which is
-; intended
-	LD A,D
-  OR E
-DivJZError:
-  CALL Z,Error
-	
-DivLoop:
-	INC BC
-	ADD HL,DE
-	RRA   ; look for mismatch between carry and
-				; bit 7 of D to detect overflow/underflow
-	XOR D
-	JP P,DivLoop
-
-	; if HL is zero then it must have been a negative number originally, and the remainder is zero, so don't make any change to HL, but increment quotient by 1
+	; Get absolute value of inputs
+	CALL AbsSubEx
+	CALL AbsSubEx
 	
 	LD A,H
-	OR L
-	JR Z,DivNoRestore
+	LD C,L
+	LD HL,0
+
+	LD B,16
 	
- 	RST_NegateDE
- 	ADD HL,DE
-	DEC BC
-	
-DivNoRestore:
-	INC BC
-	LD D,B
+clcd161:
+	RL C
+	RLA
+	ADC HL,HL
+	SBC HL,DE
+
+	JR NC,clcd162
+	ADD HL,DE
+clcd162:
+	CCF
+	DJNZ clcd161
+
+	RL C
+	RLA
+	LD D,A
 	LD E,C
 	
-	POP BC
+	; At this point DE has the result and HL
+	; has the remainder
 	
 	POP AF
+	POP BC
+	
+	; If signs of inputs were the same, return now
 	RET P
+	
 	RST_NegateDE
 	
 	RET
@@ -1296,7 +1295,7 @@ RndSubImpl:
 	POP DE
 	
 	; TODO if implementing modulus operator, this can be the enty point
-	CALL DivideHL
+	CALL DivSub
   EX DE,HL
   RET
   
@@ -1513,7 +1512,7 @@ PrintIntegerLoop:
 	EX DE,HL
 	LD DE,10
 	
-	CALL DivideHL
+	CALL DivSub
 	; HL contains remainder after / 10
 	; DE contains the quotient
 
@@ -1549,10 +1548,6 @@ List_Var:
 ; token B appears later in the list than B
 ; e.g. < is after <=
 
-org 0388h
-  DB 80h ; can delete this if we make sure this
-         ; byte is RET
-  
 org 0389h
 
 TokenList:
