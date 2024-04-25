@@ -855,7 +855,7 @@ AbsSubEx:
 AbsSub:
 	XOR A
 	XOR D
-	RET M
+	RET P
 	
 	RST_NegateDE
 	
