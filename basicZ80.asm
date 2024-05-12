@@ -31,6 +31,8 @@
 ;            bit set.
 ; 2024-04-21 Added PEEK function
 ; 2024-04-24 Put in faster DivSub. 15 bytes left
+; 1024-05-12 Fixed bug in PrintInteger. 17 bytes
+;            free.
 
 ; For development purposes assume we have
 ; 1K ROM from 0000h-03FFh containing BASIC
@@ -1017,6 +1019,7 @@ clcd162:
 	POP BC
 	
 	; If signs of inputs were the same, return now
+	; Note that remainder in HL is always positive
 	RET P
 	
 	RST_NegateDE
@@ -1498,16 +1501,15 @@ PrintInteger:
 	PUSH AF		; end marker is Z flag
 	
 	OR D			; S is set if -ve
-	RST_NegateDE
 	
 	JP P,PrintIntegerLoop
 	LD A,'-'
 	RST_Putchar
-	RST_NegateDE
 	
 PrintIntegerLoop:
-	; need HL to be -ve here, so that it can
-	; handle -32768
+	; doesn't matter whether HL is -ve or +ve
+	; because remainder from DivSub behaves as
+	; though it is +ve
 	
 	EX DE,HL
 	LD DE,10
@@ -1517,7 +1519,7 @@ PrintIntegerLoop:
 	; DE contains the quotient
 
 	LD A,'0'
-	SUB L
+	ADD A,L
 	PUSH AF ; push onto stack
 	
 	; if DE is zero we are done
@@ -1543,6 +1545,9 @@ List_Var:
 ; byte before TokenList must have high bit set
 ; e.g. RET
 
+org 0388h
+	db 128
+	
 ; order in this list must make sure that a
 ; token A that is a left substring of another
 ; token B appears later in the list than B
